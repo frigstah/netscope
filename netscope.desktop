@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=NetScope
+GenericName=Network Discovery
+Comment=LAN reconnaissance: interfaces, public IP, hosts and open ports. Developed for and by frig.
+Exec=netscope
+Icon=netscope
+Terminal=false
+Categories=Network;System;Utility;
+Keywords=network;lan;scan;ports;ip;recon;
+StartupWMClass=io.github.frigstah.netscope
+StartupNotify=false
