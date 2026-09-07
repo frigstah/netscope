@@ -2,6 +2,19 @@
 
 Notable changes, newest first.
 
+## [1.3.0] — 2026-09-08
+
+Local AI and whole-network summary.
+
+### Added
+- Local **Ollama** engine for AI SCAN (http://localhost:11434), so an
+  investigation can run fully on-device. The AI window has an engine selector
+  (cloud CLI or local) and a RERUN button. `NETSCOPE_OLLAMA_HOST` /
+  `NETSCOPE_OLLAMA_MODEL` override the endpoint and model.
+- Whole-network AI summary: click the unknown-count badge or press
+  `ctrl+shift+I` for one report that inventories the LAN, ranks risks, and
+  recommends fixes, built from the stored inventory and per-device findings.
+
 ## [1.2.0] — 2026-09-08
 
 Security posture.

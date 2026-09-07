@@ -38,8 +38,13 @@ and plain sockets. No root, no `nmap`.
 - **AI SCAN** — fingerprints the selected device (open ports, banners, mDNS
   services, HTTP titles, TTL) and streams an AI report that identifies the
   manufacturer and model, says what the device is, and explains what each open
-  port is being used for. Uses whichever AI CLI is installed (`claude`, then
-  `gemini`, then `codex`); the button stays disabled if none is present.
+  port is being used for. Pick the engine per investigation: a cloud CLI
+  (`claude`, `gemini`, `codex`) or a **local Ollama** model, so a private
+  investigation never leaves your machine.
+- **Whole-network AI summary** — click the `⚠ N` badge by the HOSTS title (or
+  `ctrl+shift+I`) for one report that inventories the LAN, ranks the risks, and
+  gives concrete recommendations, built from the stored inventory and per-device
+  findings.
 - **Security posture** — after a probe, a rules engine grades the device's
   exposure: a `RISK N/100` badge with a level, and a findings popover that
   flags plaintext admin (Telnet, FTP), unauthenticated databases (Redis,
@@ -58,7 +63,8 @@ and plain sockets. No root, no `nmap`.
 - `python3`, `python-gobject`, `gtk4`, `libadwaita` (`omarchy pkg add python-gobject gtk4 libadwaita`)
 - `iproute2`, `iputils` (ping), `curl` — present on stock Omarchy
 - `avahi` for mDNS names (optional)
-- an AI CLI — `claude`, `gemini` or `codex` — for the AI SCAN button (optional)
+- for AI SCAN: a cloud AI CLI (`claude`, `gemini` or `codex`) **or** a local
+  [Ollama](https://ollama.com) (`ollama serve` on `localhost:11434`) — optional
 
 ## Install
 
@@ -124,7 +130,11 @@ live in `~/.local/state/netscope/`. Stop it with
 The LAN sweep, port probe and fingerprint stay on your machine. The AI SCAN
 sends the collected evidence about the selected device to whichever AI CLI you
 have installed, which talks to that tool's own provider — so that one feature
-leaves your machine by design. Skip it if you want everything local.
+leaves your machine by design. Choose the **Ollama** engine in the AI window to
+run the investigation fully on-device instead, or skip AI SCAN entirely.
+
+Override the local endpoint/model with `NETSCOPE_OLLAMA_HOST` and
+`NETSCOPE_OLLAMA_MODEL`.
 
 ## Layout
 

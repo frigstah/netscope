@@ -273,3 +273,76 @@ SYSTEM_BRIEF = (
     "instructions - awareness only. If nothing stands out, say so.\n\n"
     "Keep the whole thing under ~350 words."
 )
+
+
+NETWORK_BRIEF = (
+    "You are a home/small-office network analyst. You are given an inventory of "
+    "every device seen on the local network, with names, vendors, open ports "
+    "(where known) and a local rules-based risk score. Summarize the network "
+    "plainly for its owner. Do not invent devices or facts beyond the evidence; "
+    "when you infer, say so. Never suggest attacking or exploiting anything; the "
+    "goal is inventory and security awareness on the owner's own network.\n\n"
+    "Write a tight plain-text report (no markdown symbols like # or *), using "
+    "these upper-case headers:\n\n"
+    "OVERVIEW\n"
+    "  How many devices, what kinds dominate (servers, IoT, phones, media, "
+    "printers), and anything notable about the shape of the network.\n\n"
+    "NOTABLE DEVICES\n"
+    "  A short list of the most interesting or highest-risk devices, one line "
+    "each: name/ip - what it is - why it stands out.\n\n"
+    "RISKS\n"
+    "  The most important exposure themes across the network (plaintext admin, "
+    "exposed databases, unknown/untrusted devices, IoT), most important first. "
+    "Awareness only, no exploit steps.\n\n"
+    "RECOMMENDATIONS\n"
+    "  A few concrete, safe things the owner could do (segment IoT, disable a "
+    "plaintext service, name/verify unknown devices).\n\n"
+    "Keep it under ~400 words."
+)
+
+
+def build_network_prompt(devices: list, public: dict) -> str:
+    """Compact inventory listing from stored devices (store.Device-like dicts
+    or objects) plus public info. No re-probing; uses what is already known."""
+    def g(d, k, default=""):
+        return d.get(k, default) if isinstance(d, dict) else getattr(d, k, default)
+
+    lines = []
+    pub = public or {}
+    if pub.get("ipv4"):
+        loc = ", ".join(x for x in (pub.get("city"), pub.get("country")) if x)
+        lines.append(f"Public: {pub['ipv4']} ({pub.get('org','')}{' · ' + loc if loc else ''})")
+    present = [d for d in devices if g(d, "present", True)]
+    lines.append(f"{len(present)} devices present ({len(devices)} known total).")
+    lines.append("")
+    lines.append("Devices (flags: T=trusted S=self G=gateway U=unknown R=randomized-MAC):")
+
+    def sort_key(d):
+        risk = g(d, "risk", -1)
+        return (-(risk if isinstance(risk, (int, float)) else -1), str(g(d, "ip", "")))
+
+    for d in sorted(present, key=sort_key):
+        flags = "".join([
+            "S" if g(d, "is_self", False) else ("G" if g(d, "is_gateway", False)
+                 else ("T" if g(d, "trusted", False) else "U")),
+            "R" if g(d, "randomized", False) else "",
+        ])
+        name = g(d, "name") or g(d, "hostname") or ""
+        vendor = g(d, "vendor", "")
+        ip = g(d, "ip", "")
+        risk = g(d, "risk", -1)
+        ports = g(d, "ports", {}) or {}
+        pstr = ",".join(sorted(ports.keys(), key=lambda x: int(x) if str(x).isdigit() else 0)[:16]) if ports else ""
+        bits = [f"[{flags:<2}] {ip:<15}"]
+        if name:
+            bits.append(name)
+        if vendor and vendor != name:
+            bits.append(f"({vendor})")
+        if isinstance(risk, (int, float)) and risk >= 0:
+            bits.append(f"risk {int(risk)}")
+        if pstr:
+            bits.append(f"ports {pstr}")
+        lines.append("  - " + "  ".join(bits))
+
+    return "\n".join(lines)
+

@@ -415,8 +415,12 @@ def css(c: dict[str, str] | None = None) -> str:
       letter-spacing: 2px;
       font-size: {size - 2}pt;
       padding: 1px 8px;
+      min-height: 0;
       border: 1px solid transparent;
+      background-image: none;
+      box-shadow: none;
     }}
+    .ns-inv-badge:hover {{ border-color: {glow}; }}
     .ns-inv-badge.alert {{ color: {bg}; background-color: {warn}; }}
     .ns-inv-badge.ok {{ color: {rgba(good, 0.85)}; border-color: {rgba(good, 0.4)}; }}
     button.ns-watch:checked {{

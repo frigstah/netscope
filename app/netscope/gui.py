@@ -234,6 +234,7 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         self._probe_cache: dict[str, list] = {}   # ip -> [core.PortHit] from the last probe
         self._ai_windows: list = []
         self._ai_backend = ai.available_backend()
+        self._public: dict = {}
         self._devices: dict = {}
         self._new_ips: set = set()
         self._watch_on = False
@@ -410,8 +411,10 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         t = Gtk.Label(label="HOSTS")
         t.add_css_class("ns-toolbar-title")
         top.append(t)
-        self.inv_badge = Gtk.Label(label="")
+        self.inv_badge = Gtk.Button(label="")
         self.inv_badge.add_css_class("ns-inv-badge")
+        self.inv_badge.set_tooltip_text("Click for an AI summary of the whole network")
+        self.inv_badge.connect("clicked", lambda *_: self.start_ai_network())
         top.append(self.inv_badge)
         self.host_count = _label("ns-dim", xalign=1.0)
         self.host_count.set_hexpand(True)
@@ -612,7 +615,11 @@ class NetScopeWindow(Gtk.ApplicationWindow):
             self.start_probe()
             return True
         if ctrl and keyval in (Gdk.KEY_i, Gdk.KEY_I):
-            self.start_ai_scan()
+            shift = bool(state & Gdk.ModifierType.SHIFT_MASK)
+            if shift:
+                self.start_ai_network()
+            else:
+                self.start_ai_scan()
             return True
         if ctrl and keyval in (Gdk.KEY_c, Gdk.KEY_C):
             self.copy_target()
@@ -725,6 +732,8 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         threading.Thread(target=work, daemon=True).start()
 
     def _apply_public(self, info: core.PublicInfo) -> bool:
+        self._public = {"ipv4": info.ipv4, "org": info.org, "asn": info.asn,
+                        "city": info.city, "region": info.region, "country": info.country}
         if info.error and not info.ipv4:
             self.pub_ip4.set_text("OFFLINE")
             self.pub_org.set_text(info.error)
@@ -908,7 +917,7 @@ class NetScopeWindow(Gtk.ApplicationWindow):
     def _update_inventory_badge(self) -> None:
         summ = store.summary()
         u = summ.get("unknown", 0)
-        self.inv_badge.set_text(f"⚠ {u}" if u else "✓")
+        self.inv_badge.set_label(f"⚠ {u}" if u else "✓")
         self.inv_badge.set_tooltip_text(
             (f"{u} device(s) present that you have not marked trusted" if u
              else "every present device is trusted") + " — click WATCH to monitor")
@@ -1168,6 +1177,21 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         win.present()
         win.start()
 
+    def start_ai_network(self) -> None:
+        if not self._ai_backend:
+            self.log("no AI engine available (install claude/gemini/codex, or run ollama)")
+            return
+        devices = [asdict(d) for d in store.load().values()]
+        if not devices:
+            self.log("run a scan first — nothing in the inventory to summarize")
+            return
+        win = AiScanWindow(self, "network", backend=self._ai_backend, mode="network",
+                           devices=devices, public=dict(self._public))
+        self._ai_windows.append(win)
+        self.log(f"ai network summary via {self._ai_backend} ({len(devices)} devices)")
+        win.present()
+        win.start()
+
     def _probe_failed(self, err: str) -> bool:
         self._probing = False
         self.probe_btn.set_label("PROBE")
@@ -1182,8 +1206,11 @@ class AiScanWindow(Gtk.Window):
     CLI, and streams the investigation report back. Developed for and by frig.
     """
 
-    def __init__(self, parent: "NetScopeWindow", ip: str, host, hits, backend: str):
-        super().__init__(title=f"{core.APP_NAME} · AI investigation · {ip}")
+    def __init__(self, parent: "NetScopeWindow", ip: str, host=None, hits=None,
+                 backend=None, mode: str = "device", devices=None, public=None):
+        title = (f"{core.APP_NAME} · AI network summary" if mode == "network"
+                 else f"{core.APP_NAME} · AI investigation · {ip}")
+        super().__init__(title=title)
         # register with the app so this window carries the io.github.frigstah.netscope class
         # (not "python3"), which the Hyprland float rule matches on
         appref = parent.get_application()
@@ -1199,6 +1226,10 @@ class AiScanWindow(Gtk.Window):
         self.host = host
         self.hits = hits
         self.backend = backend
+        self.mode = mode
+        self.devices = devices or []
+        self.public = public or {}
+        self._engines = ai.engines()
         self._stop = threading.Event()
         self._buffer_started = False
         self._cursor_on = True
@@ -1221,17 +1252,28 @@ class AiScanWindow(Gtk.Window):
 
         header = Gtk.Box(spacing=12)
         header.add_css_class("ns-header")
-        brand = Gtk.Label(label="◢ AI INVESTIGATION")
+        brand = Gtk.Label(label="◢ AI NETWORK" if self.mode == "network" else "◢ AI INVESTIGATION")
         brand.add_css_class("ns-brand")
         header.append(brand)
-        target = Gtk.Label(label=self.ip)
+        target = Gtk.Label(label="whole network" if self.mode == "network" else self.ip)
         target.add_css_class("ns-accent")
         target.set_valign(Gtk.Align.END)
         header.append(target)
         self.status = _label("ns-dim", xalign=1.0)
         self.status.set_hexpand(True)
-        self.status.set_text(f"engine: {self.backend}")
         header.append(self.status)
+        # engine picker (cloud CLIs and/or local Ollama)
+        if self._engines:
+            ids = [e[0] for e in self._engines]
+            self._engine_ids = ids
+            self.engine_dd = _dropdown([e[1] for e in self._engines], 150, cap=22)
+            sel = ids.index(self.backend) if self.backend in ids else 0
+            self.backend = ids[sel]
+            self.engine_dd.set_selected(sel)
+            self.engine_dd.set_tooltip_text("Which AI engine to use (cloud, or local Ollama)")
+            self.engine_dd.connect("notify::selected",
+                                   lambda dd, _p: setattr(self, "backend", self._engine_ids[dd.get_selected()]))
+            header.append(self.engine_dd)
         self.spinner = Gtk.Label(label="●")
         self.spinner.add_css_class("ns-live")
         header.append(self.spinner)
@@ -1264,6 +1306,11 @@ class AiScanWindow(Gtk.Window):
         self.copy_btn.add_css_class("ns-ghost")
         self.copy_btn.connect("clicked", lambda *_: self._copy())
         footer.append(self.copy_btn)
+        self.rerun_btn = Gtk.Button(label="RERUN")
+        self.rerun_btn.add_css_class("ns-ghost")
+        self.rerun_btn.set_tooltip_text("Run again with the selected engine")
+        self.rerun_btn.connect("clicked", lambda *_: self.start())
+        footer.append(self.rerun_btn)
         self.stop_btn = Gtk.Button(label="STOP")
         self.stop_btn.add_css_class("ns-danger")
         self.stop_btn.connect("clicked", lambda *_: self._stop.set())
@@ -1290,6 +1337,13 @@ class AiScanWindow(Gtk.Window):
         return getattr(self, "_finished", False)
 
     def start(self) -> None:
+        # reset so RERUN works
+        self._finished = False
+        self._stop = threading.Event()
+        self.stop_btn.set_sensitive(True)
+        self.report_view.get_buffer().set_text("")
+        self.progress.set_fraction(0)
+        GLib.timeout_add(530, self._blink)
         ip, host, hits, backend, stop = self.ip, self.host, self.hits, self.backend, self._stop
 
         def set_status(msg, frac=None):
@@ -1297,6 +1351,19 @@ class AiScanWindow(Gtk.Window):
             if frac is not None:
                 self.progress.set_fraction(frac)
             return False
+
+        if self.mode == "network":
+            def net_work():
+                GLib.idle_add(set_status, f"asking {backend}…", 0.6)
+                GLib.idle_add(self._begin_report)
+                ai.investigate_network(
+                    self.devices, self.public,
+                    on_delta=lambda t: GLib.idle_add(self._append, t),
+                    on_done=lambda full, err: GLib.idle_add(self._finish, err),
+                    stop=stop, backend=backend,
+                )
+            threading.Thread(target=net_work, daemon=True).start()
+            return
 
         def work():
             local_hits = hits
