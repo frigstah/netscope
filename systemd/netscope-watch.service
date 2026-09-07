@@ -1,0 +1,14 @@
+[Unit]
+Description=NetScope LAN watcher — sweep and alert on new devices/ports
+Documentation=https://github.com/frigstah/netscope
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/netscope --watch --interval 120
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=graphical-session.target

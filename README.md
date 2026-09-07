@@ -40,6 +40,12 @@ and plain sockets. No root, no `nmap`.
   manufacturer and model, says what the device is, and explains what each open
   port is being used for. Uses whichever AI CLI is installed (`claude`, then
   `gemini`, then `codex`); the button stays disabled if none is present.
+- **Monitoring** — NetScope remembers every device by MAC in a persistent
+  inventory. Name a device and mark it trusted from the probe row; untrusted
+  present devices show an `UNKN` mark and a count badge (`⚠ N`) by the HOSTS
+  title. Turn on **WATCH** (top bar) to keep sweeping, and get a desktop
+  notification when an unknown device joins the network or a new port opens on
+  a known host. A newly-seen device is tagged `NEW`.
 
 ## Requirements
 
@@ -66,6 +72,7 @@ credentials can reach it (SSH key or a token) before running `plugin add`.
 - **right** — open the NetScope window
 - **middle** — background LAN sweep
 - popout keys — `o` open, `s` sweep, `r` refresh, `c` copy public IP, arrows + enter
+- the bar icon tints urgent while any untrusted device is present, and the popout shows the unknown count
 
 Settings live under the `io.github.frigstah.netscope` entry in `~/.config/omarchy/shell.json`:
 `pollSeconds` and `autoScanOnOpen`.
@@ -75,16 +82,33 @@ Settings live under the `io.github.frigstah.netscope` entry in `~/.config/omarch
 - `F5` sweep · `Enter` or `ctrl+P` probe the selected host · `ctrl+I` AI scan
 - `Esc` stop · `ctrl+C` copy target IP · `ctrl+R` refresh · `ctrl+Q` quit
 - double-click a host to probe it
+- name a device and toggle **TRUST** in the probe row; **WATCH** monitors continuously
 - two draggable dividers set the proportions: interfaces vs hosts, and hosts vs probe
 
 ## Command line
 
 ```
 netscope                    open the window
-netscope --status [--json]  interfaces, public IP, last sweep
-netscope --scan [CIDR]      sweep (default: the default-route network)
+netscope --status [--json]  interfaces, public IP, last sweep, inventory summary
+netscope --scan [CIDR]      sweep (records changes, notifies on new devices)
 netscope --probe IP --ports quick|common|full|22,80,8000-8100
+netscope --watch [--interval N]   sweep on a loop and notify on changes
+netscope --inventory        list remembered devices (P present, T trusted, R randomized MAC)
+netscope --events [--limit N]     recent change events
 ```
+
+### Always-on monitoring
+
+Run the watcher headless as a systemd --user service so alerts fire even when
+the window is closed:
+
+```bash
+~/.config/omarchy/plugins/io.github.frigstah.netscope/install.sh --watch
+```
+
+It writes and enables `netscope-watch.service`. The inventory and event log
+live in `~/.local/state/netscope/`. Stop it with
+`systemctl --user disable --now netscope-watch.service`.
 
 `--json` on any of those gives machine-readable output.
 
@@ -107,18 +131,24 @@ io.github.frigstah.netscope/
 ├── bin/netscope       launcher (symlinked to ~/.local/bin/netscope)
 └── app/netscope/      python package
     ├── core.py        interfaces, public IP, sweep, probe
+    ├── store.py       persistent device inventory + event log
+    ├── notify.py      desktop notifications
     ├── recon.py       device fingerprint
     ├── ai.py          AI investigation (claude / gemini / codex)
     ├── theme.py       Omarchy colours + font -> GTK CSS
     ├── gui.py         GTK4 window
-    └── cli.py         command line
+    └── cli.py         command line, headless watcher
+systemd/netscope-watch.service   optional background watcher unit
 ```
 
 ## Uninstall
 
 ```bash
+systemctl --user disable --now netscope-watch.service 2>/dev/null || true
 omarchy plugin remove io.github.frigstah.netscope
 rm -f ~/.local/bin/netscope ~/.local/share/applications/netscope.desktop
+rm -f ~/.config/systemd/user/netscope-watch.service
+rm -rf ~/.local/state/netscope   # inventory + event history
 ```
 
 ---

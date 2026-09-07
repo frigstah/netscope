@@ -2,6 +2,22 @@
 
 Notable changes, newest first.
 
+## [1.1.0] — 2026-09-08
+
+Continuous monitoring.
+
+### Added
+- Persistent device inventory in `~/.local/state/netscope/`, keyed by MAC:
+  remembers every device, tracks presence, and detects randomized MACs.
+- Name devices and mark them trusted from the probe row; untrusted present
+  devices show an `UNKN` mark and a `⚠ N` count badge, newly-seen devices `NEW`.
+- WATCH toggle: keeps sweeping and fires desktop notifications when an unknown
+  device joins or a new open port appears on a known host.
+- Headless watcher (`netscope --watch`) and a systemd --user service
+  (`install.sh --watch`) so alerts fire with the window closed.
+- New CLI: `--watch`, `--inventory`, `--events`; `--scan`/`--status` now record
+  and report the inventory. The bar icon tints while unknown devices are present.
+
 ## [1.0.0] — 2026-09-07
 
 First release. Developed for and by frig.

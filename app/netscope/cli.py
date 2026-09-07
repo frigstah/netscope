@@ -14,7 +14,7 @@ import sys
 import time
 from dataclasses import asdict
 
-from . import core
+from . import core, store, notify
 
 
 def _default_network() -> tuple[str, str]:
@@ -29,6 +29,7 @@ def _default_network() -> tuple[str, str]:
 
 def cmd_status(as_json: bool, refresh: bool) -> int:
     st = core.status(refresh_public=refresh)
+    st["inventory"] = store.summary()
     if as_json:
         print(json.dumps(st))
         return 0
@@ -45,6 +46,10 @@ def cmd_status(as_json: bool, refresh: bool) -> int:
     if ls["hosts"]:
         age = int(time.time() - ls["at"])
         print(f"  lastscan {ls['hosts']} hosts on {ls['network']} ({age}s ago)")
+    inv = st["inventory"]
+    if inv.get("seeded"):
+        print(f"  inventory {inv['total']} known, {inv['present']} present, "
+              f"{inv['unknown']} unknown, {inv['trusted']} trusted")
     return 0
 
 
@@ -58,14 +63,86 @@ def cmd_scan(network: str, as_json: bool) -> int:
     if not as_json:
         print(f"sweeping {network} ...", file=sys.stderr)
     result = core.sweep(network, iface)
+    events = store.record_sweep(result.hosts)
+    notify.notify_events(events)
     if as_json:
-        print(json.dumps(result.to_json()))
+        out = result.to_json()
+        out["events"] = events
+        print(json.dumps(out))
         return 0
     for h in result.hosts:
         flag = "SELF" if h.is_self else ("GW" if h.is_gateway else "")
         rtt = f"{h.rtt_ms:.1f}ms" if h.rtt_ms >= 0 else "arp"
         print(f"  {h.ip:<16} {flag:<4} {h.mac:<18} {rtt:>9}  {h.label:<28} {h.vendor}")
-    print(f"{len(result.hosts)} hosts in {result.duration:.1f}s", file=sys.stderr)
+    for e in events:
+        print(f"  * {e['type']:<11} {e.get('ip',''):<16} {e.get('name','')}", file=sys.stderr)
+    print(f"{len(result.hosts)} hosts in {result.duration:.1f}s "
+          f"({len(events)} change{'s' if len(events)!=1 else ''})", file=sys.stderr)
+    return 0
+
+
+def cmd_watch(network: str, interval: int) -> int:
+    """Sweep on an interval, record changes, and fire desktop notifications.
+    Meant to run headless (a systemd --user service); Ctrl-C to stop."""
+    iface = ""
+    if not network:
+        network, iface = _default_network()
+    if not network:
+        print("no network to watch", file=sys.stderr)
+        return 1
+    interval = max(15, interval)
+    print(f"{core.APP_NAME}: watching {network} every {interval}s "
+          f"(first sweep seeds the baseline)", file=sys.stderr)
+    try:
+        while True:
+            try:
+                result = core.sweep(network, iface, resolve_names=True)
+                events = store.record_sweep(result.hosts)
+                notify.notify_events(events)
+                stamp = time.strftime("%H:%M:%S")
+                if events:
+                    for e in events:
+                        print(f"[{stamp}] {e['type']} {e.get('ip','')} {e.get('name','')}",
+                              file=sys.stderr)
+                else:
+                    print(f"[{stamp}] {len(result.hosts)} hosts, no change", file=sys.stderr)
+            except Exception as e:  # never let one bad sweep kill the watcher
+                print(f"watch: sweep failed: {e}", file=sys.stderr)
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print("watch stopped", file=sys.stderr)
+        return 0
+
+
+def cmd_inventory(as_json: bool) -> int:
+    devices = sorted(store.load().values(),
+                     key=lambda d: (not d.present, not d.trusted, d.ip))
+    if as_json:
+        from dataclasses import asdict as _asdict
+        print(json.dumps([_asdict(d) for d in devices]))
+        return 0
+    for d in devices:
+        flags = "".join([
+            "P" if d.present else ".",
+            "T" if d.trusted else ("S" if d.is_self else ("G" if d.is_gateway else "?")),
+            "R" if d.randomized else " ",
+        ])
+        print(f"  {flags}  {d.ip:<16} {d.mac:<18} {d.display_name:<28} {d.vendor}")
+    print(f"{len(devices)} devices ("
+          f"{sum(1 for d in devices if d.unknown and d.present)} unknown present)",
+          file=sys.stderr)
+    return 0
+
+
+def cmd_events(as_json: bool, limit: int) -> int:
+    evs = store.recent_events(limit)
+    if as_json:
+        print(json.dumps(evs))
+        return 0
+    for e in reversed(evs):
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(e.get("ts", 0)))
+        print(f"  {stamp}  {e['type']:<12} {e.get('ip',''):<16} "
+              f"{e.get('name','')} {e.get('detail','')}")
     return 0
 
 
@@ -77,6 +154,15 @@ def cmd_probe(ip: str, ports: str, as_json: bool) -> int:
     if not as_json:
         print(f"probing {ip} ({len(plist)} ports) ...", file=sys.stderr)
     hits = core.probe(ip, plist)
+    # find the host's MAC from the last sweep so the probe attaches to its device
+    mac = ""
+    scan = core.last_scan() or {}
+    for h in scan.get("hosts", []):
+        if h.get("ip") == ip:
+            mac = h.get("mac", "")
+            break
+    events = store.record_probe(ip, mac, hits)
+    notify.notify_events(events)
     if as_json:
         print(json.dumps([asdict(h) for h in hits]))
         return 0
@@ -92,6 +178,12 @@ def main(argv=None) -> int:
     ap.add_argument("--status", action="store_true")
     ap.add_argument("--scan", nargs="?", const="", metavar="CIDR")
     ap.add_argument("--probe", metavar="IP")
+    ap.add_argument("--watch", nargs="?", const="", metavar="CIDR",
+                    help="sweep on an interval and notify on changes")
+    ap.add_argument("--interval", type=int, default=120, help="watch interval seconds")
+    ap.add_argument("--inventory", action="store_true", help="list remembered devices")
+    ap.add_argument("--events", action="store_true", help="recent change events")
+    ap.add_argument("--limit", type=int, default=50)
     ap.add_argument("--ports", default="quick")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--refresh", action="store_true", help="bypass the public-ip cache")
@@ -103,6 +195,12 @@ def main(argv=None) -> int:
         return 0
     if args.status:
         return cmd_status(args.json, args.refresh)
+    if args.watch is not None:
+        return cmd_watch(args.watch, args.interval)
+    if args.inventory:
+        return cmd_inventory(args.json)
+    if args.events:
+        return cmd_events(args.json, args.limit)
     if args.scan is not None:
         return cmd_scan(args.scan, args.json)
     if args.probe:

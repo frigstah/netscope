@@ -14,7 +14,7 @@ gi.require_version("Gdk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk  # noqa: E402
 
-from . import ai, core, recon, theme  # noqa: E402
+from . import ai, core, notify, recon, store, theme  # noqa: E402
 
 KIND_GLYPH = {
     "wifi": "󰖩", "ethernet": "󰈀", "vpn": "󰖂", "virtual": "󰡨",
@@ -35,6 +35,8 @@ class HostRow(GObject.Object):
     rtt = GObject.Property(type=float, default=-1.0)
     seen = GObject.Property(type=str, default="")
     flag = GObject.Property(type=str, default="")
+    mark = GObject.Property(type=str, default="")   # TRUST / NEW / UNKN
+    key = GObject.Property(type=str, default="")
 
     def __init__(self):
         super().__init__()
@@ -50,6 +52,7 @@ class HostRow(GObject.Object):
         r.rtt = h.rtt_ms
         r.seen = "+".join(h.seen_by)
         r.flag = "SELF" if h.is_self else ("GW" if h.is_gateway else ("" if "icmp" in h.seen_by else "ARP"))
+        r.key = store.device_key(h.mac, h.ip)
         try:
             r.ipnum = int(ipaddress.ip_address(h.ip))
         except ValueError:
@@ -126,13 +129,16 @@ def _copyable(label: Gtk.Label, window: "NetScopeWindow") -> Gtk.Label:
     return label
 
 
-def _dropdown(items: list[str], width: int) -> Gtk.DropDown:
-    """DropDown whose button label ellipsizes, so the widest item never dictates the window's minimum width."""
+def _dropdown(items: list[str], width: int, cap: int = 16) -> Gtk.DropDown:
+    """DropDown whose button label ellipsizes to `cap` chars, so a long item
+    (a wide network string) can never balloon the toolbar past the tile."""
     dd = Gtk.DropDown.new_from_strings(items)
     factory = Gtk.SignalListItemFactory()
 
     def setup(_f, item):
-        item.set_child(_label())
+        lbl = _label()
+        lbl.set_max_width_chars(cap)
+        item.set_child(lbl)
 
     def bind(_f, item):
         item.get_child().set_text(item.get_item().get_string())
@@ -142,6 +148,37 @@ def _dropdown(items: list[str], width: int) -> Gtk.DropDown:
     dd.set_factory(factory)
     dd.set_size_request(width, -1)
     return dd
+
+
+def _mark_column() -> Gtk.ColumnViewColumn:
+    factory = Gtk.SignalListItemFactory()
+
+    def setup(_f, item):
+        box = Gtk.Box(halign=Gtk.Align.START)
+        lbl = Gtk.Label()
+        lbl.add_css_class("ns-cell-mark")
+        box.append(lbl)
+        item.set_child(box)
+
+    def bind(_f, item):
+        lbl = item.get_child().get_first_child()
+        m = item.get_item().mark
+        lbl.set_text(m)
+        lbl.set_visible(bool(m))
+        for c in ("new", "trust", "unkn"):
+            lbl.remove_css_class(c)
+        if m == "NEW":
+            lbl.add_css_class("new")
+        elif m == "TRUST":
+            lbl.add_css_class("trust")
+        elif m == "UNKN":
+            lbl.add_css_class("unkn")
+
+    factory.connect("setup", setup)
+    factory.connect("bind", bind)
+    col = Gtk.ColumnViewColumn.new("", factory)
+    col.set_fixed_width(58)
+    return col
 
 
 def _flag_column() -> Gtk.ColumnViewColumn:
@@ -197,6 +234,12 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         self._probe_cache: dict[str, list] = {}   # ip -> [core.PortHit] from the last probe
         self._ai_windows: list = []
         self._ai_backend = ai.available_backend()
+        self._devices: dict = {}
+        self._new_ips: set = set()
+        self._watch_on = False
+        self._watch_source = 0
+        self._watch_interval = 120
+        self._loading_identity = False
 
         self.host_store = Gio.ListStore.new(HostRow)
         self.port_store = Gio.ListStore.new(PortRow)
@@ -223,6 +266,7 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         self.log(f"theme {theme.theme_name()} // font {theme.font_family()}")
         self.refresh_interfaces()
         self.refresh_public()
+        self._update_inventory_badge()
         GLib.timeout_add(400, self._autoscan)
 
     # ---- layout ----------------------------------------------------------- #
@@ -231,18 +275,27 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
 
         # header
-        header = Gtk.Box(spacing=12)
+        header = Gtk.Box(spacing=8)
         header.add_css_class("ns-header")
         brand = Gtk.Label(label="◢ NETSCOPE")
         brand.add_css_class("ns-brand")
+        from gi.repository import Pango as _Pango
         sub = Gtk.Label(label="// LAN RECONNAISSANCE")
         sub.add_css_class("ns-brand-sub")
         sub.set_valign(Gtk.Align.END)
+        sub.set_ellipsize(_Pango.EllipsizeMode.END)
         header.append(brand)
         header.append(sub)
         self.status_label = _label("ns-dim", xalign=1.0)
         self.status_label.set_hexpand(True)
+        self.status_label.set_max_width_chars(20)
         header.append(self.status_label)
+        self.watch_btn = Gtk.ToggleButton(label="WATCH")
+        self.watch_btn.add_css_class("ns-watch")
+        self.watch_btn.set_tooltip_text(
+            "Keep sweeping and alert when an unknown device joins or a new port opens")
+        self.watch_btn.connect("toggled", lambda b: self._toggle_watch(b.get_active()))
+        header.append(self.watch_btn)
         self.live_label = Gtk.Label(label="● LIVE")
         self.live_label.add_css_class("ns-live")
         header.append(self.live_label)
@@ -254,11 +307,11 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         body.set_vexpand(True)
         body.set_start_child(self._build_sidebar())
         body.set_end_child(self._build_main())
-        body.set_position(240)
+        body.set_position(206)
         body.set_resize_start_child(False)   # on window resize, the hosts side grows
         body.set_resize_end_child(True)
         body.set_shrink_start_child(False)   # don't let either side clip its content
-        body.set_shrink_end_child(False)
+        body.set_shrink_end_child(True)
         self.body_paned = body
         root.append(body)
 
@@ -357,6 +410,9 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         t = Gtk.Label(label="HOSTS")
         t.add_css_class("ns-toolbar-title")
         top.append(t)
+        self.inv_badge = Gtk.Label(label="")
+        self.inv_badge.add_css_class("ns-inv-badge")
+        top.append(self.inv_badge)
         self.host_count = _label("ns-dim", xalign=1.0)
         self.host_count.set_hexpand(True)
         self.host_count.set_width_chars(8)
@@ -364,12 +420,12 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         top.append(self.host_count)
         wrap.append(top)
         bar = Gtk.Box(spacing=10)
-        self.net_dropdown = _dropdown([""], 210)
-        self.net_dropdown.set_hexpand(True)
+        self.net_dropdown = _dropdown([""], 150)
         self.net_dropdown.set_tooltip_text("Network to sweep")
         bar.append(self.net_dropdown)
         self.net_entry = Gtk.Entry(placeholder_text="custom cidr")
-        self.net_entry.set_size_request(110, -1)
+        self.net_entry.set_hexpand(True)
+        self.net_entry.set_size_request(80, -1)
         self.net_entry.connect("activate", lambda *_: self.start_scan())
         bar.append(self.net_entry)
         self.scan_btn = Gtk.Button(label="SCAN")
@@ -390,6 +446,7 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         view.connect("activate", lambda *_: self.start_probe())
         view.append_column(_text_column("IP", "ip", "ns-cell-ip", fixed=150))
         view.append_column(_flag_column())
+        view.append_column(_mark_column())
         view.append_column(_text_column("NAME", "name", "", expand=True))
         view.append_column(_text_column("MAC", "mac", "ns-dim", fixed=170))
         view.append_column(_text_column("VENDOR", "vendor", "", expand=True))
@@ -415,20 +472,27 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         # shorter address never changes the window's minimum width
         self.target_label = Gtk.Label(label="select a host", xalign=0)
         self.target_label.add_css_class("ns-target")
-        self.target_label.set_width_chars(15)
+        self.target_label.set_width_chars(13)
         self.target_label.set_max_width_chars(15)
         from gi.repository import Pango
         self.target_label.set_ellipsize(Pango.EllipsizeMode.END)
         top.append(self.target_label)
-        self.target_sub = _label("ns-dim")
-        self.target_sub.set_hexpand(True)
-        top.append(self.target_sub)
-        self.port_count = _label("ns-dim", xalign=1.0)
-        top.append(self.port_count)
-        copy = Gtk.Button(label="COPY IP")
-        copy.add_css_class("ns-ghost")
-        copy.connect("clicked", lambda *_: self.copy_target())
-        top.append(copy)
+        self.name_entry = Gtk.Entry(placeholder_text="name this device")
+        self.name_entry.set_hexpand(True)
+        self.name_entry.set_size_request(100, -1)
+        self.name_entry.set_sensitive(False)
+        self.name_entry.set_tooltip_text("Give this device a name (saved to your inventory)")
+        self.name_entry.connect("activate", lambda *_: self._save_identity())
+        fl = Gtk.EventControllerFocus()
+        fl.connect("leave", lambda *_: self._save_identity())
+        self.name_entry.add_controller(fl)
+        top.append(self.name_entry)
+        self.trust_btn = Gtk.ToggleButton(label="TRUST")
+        self.trust_btn.add_css_class("ns-ghost")
+        self.trust_btn.set_sensitive(False)
+        self.trust_btn.set_tooltip_text("Mark this device as trusted/known")
+        self.trust_btn.connect("toggled", lambda *_: self._save_identity())
+        top.append(self.trust_btn)
         wrap.append(top)
         bar = Gtk.Box(spacing=10)
         wrap.append(bar)
@@ -463,6 +527,9 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         )
         self.ai_btn.connect("clicked", lambda *_: self.start_ai_scan())
         bar.append(self.ai_btn)
+        self.port_count = _label("ns-dim", xalign=1.0)
+        self.port_count.set_hexpand(True)
+        bar.append(self.port_count)
         box.append(wrap)
 
         self.probe_progress = Gtk.ProgressBar()
@@ -714,6 +781,7 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         self.host_count.set_text("0 hosts")
         self.set_status(f"sweeping {network}", busy=True)
         self.log(f"sweep {network}" + (f" on {iface}" if iface else ""))
+        self._devices = store.load()
         stop = self._scan_stop
 
         def on_host(h: core.Host):
@@ -731,10 +799,30 @@ class NetScopeWindow(Gtk.ApplicationWindow):
 
         threading.Thread(target=work, daemon=True).start()
 
+    def _enrich_row(self, row: "HostRow") -> None:
+        """Overlay a row with what the inventory remembers: a user name, trust,
+        and a NEW / UNKN / TRUST mark."""
+        d = self._devices.get(row.key)
+        if d is not None:
+            if d.name:
+                row.name = d.name
+            trusted = d.trusted
+        else:
+            trusted = row.flag == "SELF"
+        if row.ip in self._new_ips:
+            row.mark = "NEW"
+        elif trusted or row.flag in ("SELF",):
+            row.mark = "TRUST"
+        elif row.flag == "GW":
+            row.mark = ""
+        else:
+            row.mark = "UNKN"
+
     def _add_live_host(self, h: core.Host) -> bool:
         if h.ip in self._host_index:
             return False
         row = HostRow.from_host(h)
+        self._enrich_row(row)
         self._host_index[h.ip] = row
         # insert sorted by ip
         n = self.host_store.get_n_items()
@@ -764,10 +852,21 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         self.scan_btn.set_label("SCAN")
         self.scan_btn.remove_css_class("ns-danger")
         self.scan_progress.set_fraction(1.0)
+
+        # record into the persistent inventory and surface what changed
+        events = store.record_sweep(result.hosts)
+        self._new_ips = {e["ip"] for e in events if e["type"] == store.EV_NEW}
+        self._devices = store.load()
+        if self._watch_on and events:
+            notify.notify_events(events)
+        for e in events:
+            self._log_event(e)
+
         self.host_store.remove_all()
         self._host_index.clear()
         for h in result.hosts:
             row = HostRow.from_host(h)
+            self._enrich_row(row)
             self._host_index[h.ip] = row
             self.host_store.append(row)
         n = len(result.hosts)
@@ -775,9 +874,30 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         self.set_status(f"{n} hosts on {result.network}")
         named = sum(1 for h in result.hosts if h.hostname or h.mdns)
         self.log(f"sweep complete: {n} hosts, {named} named, {result.duration:.1f}s")
+        self._update_inventory_badge()
         if self._target_ip and self._target_ip in self._host_index:
             self._select_ip(self._target_ip)
         return False
+
+    def _log_event(self, e: dict) -> None:
+        label = {
+            store.EV_NEW: "NEW DEVICE", store.EV_GONE: "device left",
+            store.EV_BACK: "device back", store.EV_PORT_NEW: "NEW PORT",
+        }.get(e["type"], e["type"])
+        who = e.get("name") or e.get("ip")
+        extra = f" {e['detail']}" if e.get("detail") else ""
+        self.log(f"! {label}: {who} ({e.get('ip','')}){extra}")
+
+    def _update_inventory_badge(self) -> None:
+        summ = store.summary()
+        u = summ.get("unknown", 0)
+        self.inv_badge.set_text(f"⚠ {u}" if u else "✓")
+        self.inv_badge.set_tooltip_text(
+            (f"{u} device(s) present that you have not marked trusted" if u
+             else "every present device is trusted") + " — click WATCH to monitor")
+        self.inv_badge.remove_css_class("alert")
+        self.inv_badge.remove_css_class("ok")
+        self.inv_badge.add_css_class("alert" if u else "ok")
 
     def _scan_failed(self, err: str) -> bool:
         self._scanning = False
@@ -801,9 +921,14 @@ class NetScopeWindow(Gtk.ApplicationWindow):
             return
         self._target_ip = item.ip
         self.target_label.set_text(item.ip)
-        sub = " · ".join(x for x in (item.name, item.vendor) if x)
-        self.target_sub.set_text(sub)
         self.probe_btn.set_sensitive(True)
+        d = self._devices.get(item.key)
+        self._loading_identity = True
+        self.name_entry.set_sensitive(True)
+        self.name_entry.set_text(d.name if d else "")
+        self.trust_btn.set_sensitive(True)
+        self.trust_btn.set_active(d.trusted if d else (item.flag == "SELF"))
+        self._loading_identity = False
         self.ai_btn.set_sensitive(bool(self._ai_backend))
         if not self._ai_backend:
             self.ai_btn.set_tooltip_text("No AI CLI found (install claude, gemini or codex)")
@@ -811,6 +936,44 @@ class NetScopeWindow(Gtk.ApplicationWindow):
             self.port_store.remove_all()
             self.port_count.set_text("")
             self.probe_progress.set_fraction(0)
+
+    def _save_identity(self) -> None:
+        if getattr(self, "_loading_identity", False):
+            return
+        item = self.host_sel.get_selected_item()
+        if not item:
+            return
+        name = self.name_entry.get_text().strip()
+        trusted = self.trust_btn.get_active()
+        d = self._devices.get(item.key)
+        if d is not None and d.name == name and d.trusted == trusted:
+            return
+        store.update_device(item.key, name=name, trusted=trusted)
+        self._devices = store.load()
+        item.name = name or item.mdns or item.vendor or item.ip
+        self._enrich_row(item)
+        self._update_inventory_badge()
+        self.log(f"inventory: {item.ip} named '{name or '(cleared)'}', "
+                 f"{'trusted' if trusted else 'untrusted'}")
+
+    def _toggle_watch(self, on: bool) -> None:
+        if on and not self._watch_on:
+            self._watch_on = True
+            self._watch_source = GLib.timeout_add_seconds(self._watch_interval, self._watch_tick)
+            self.log(f"watch on — sweeping every {self._watch_interval}s, notifying on changes")
+        elif not on and self._watch_on:
+            self._watch_on = False
+            if self._watch_source:
+                GLib.source_remove(self._watch_source)
+                self._watch_source = 0
+            self.log("watch off")
+
+    def _watch_tick(self) -> bool:
+        if not self._watch_on:
+            return False
+        if not self._scanning and not self._probing:
+            self.start_scan()
+        return True
 
     def _on_profile_changed(self, *_):
         self.ports_entry.set_visible(self.profile_dropdown.get_selected() == 3)

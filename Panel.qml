@@ -31,6 +31,8 @@ Panel {
   property var ifaces: []
   property var pub: ({})
   property var lastScan: ({})
+  property var inventory: ({})
+  readonly property int unknownCount: inventory && inventory.unknown ? inventory.unknown : 0
   property bool loaded: false
   property bool scanning: false
   property string lastError: ""
@@ -50,6 +52,7 @@ Panel {
     for (var i = 0; i < ifaces.length; i++) if (ifaces[i].up) up++
     var s = up + " LINK" + (up === 1 ? "" : "S") + " UP"
     if (lastScan.hosts > 0) s += " // " + lastScan.hosts + " HOSTS"
+    if (unknownCount > 0) s += " // " + unknownCount + " UNKNOWN"
     return s
   }
 
@@ -126,6 +129,7 @@ Panel {
       ifaces = d.interfaces || []
       pub = d.public || {}
       lastScan = d.lastScan || {}
+      inventory = d.inventory || {}
       loaded = true
       lastError = ""
     } catch (e) {
@@ -203,7 +207,8 @@ Panel {
         Text {
           anchors.centerIn: parent
           text: "󰛳"
-          color: root.scanning ? Qt.darker(root.barForeground, 1.5) : root.barForeground
+          color: root.scanning ? Qt.darker(root.barForeground, 1.5)
+                               : (root.unknownCount > 0 ? root.urgent : root.barForeground)
           font.family: root.fontFamily
           font.pixelSize: Style.font.icon
         }

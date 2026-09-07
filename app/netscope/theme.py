@@ -367,6 +367,32 @@ def css(c: dict[str, str] | None = None) -> str:
     }}
     .ns-cell-flag.gw {{ background-color: {warn}; }}
     .ns-cell-flag.arp {{ background-color: {muted}; }}
+    .ns-cell-mark {{
+      font-size: {size - 3}pt;
+      font-weight: 800;
+      letter-spacing: 1px;
+      padding: 0 5px;
+    }}
+    .ns-cell-mark.new {{ color: {bg}; background-color: {bad}; }}
+    .ns-cell-mark.trust {{ color: {rgba(good, 0.9)}; }}
+    .ns-cell-mark.unkn {{ color: {rgba(warn, 0.85)}; }}
+    columnview > listview > row:selected .ns-cell-mark.trust {{ color: {c['bright_foreground']}; }}
+    columnview > listview > row:selected .ns-cell-mark.unkn {{ color: {c['bright_foreground']}; }}
+
+    .ns-inv-badge {{
+      font-weight: 800;
+      letter-spacing: 2px;
+      font-size: {size - 2}pt;
+      padding: 1px 8px;
+      border: 1px solid transparent;
+    }}
+    .ns-inv-badge.alert {{ color: {bg}; background-color: {warn}; }}
+    .ns-inv-badge.ok {{ color: {rgba(good, 0.85)}; border-color: {rgba(good, 0.4)}; }}
+    button.ns-watch:checked {{
+      color: {bg};
+      background-color: {glow};
+      border-color: {glow};
+    }}
 
     scrollbar {{ background: transparent; border: none; }}
     scrollbar slider {{
