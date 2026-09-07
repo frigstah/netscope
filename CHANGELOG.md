@@ -2,6 +2,24 @@
 
 Notable changes, newest first.
 
+## [1.6.2] — 2026-09-08
+
+### Fixed
+- Notification flood: devices with randomized/private MACs (phones, some IoT)
+  rejoin under a new MAC each sweep and looked "new" every time; they no longer
+  raise device-joined/left desktop notifications.
+- Marking a device trusted without typing a name no longer crashes.
+- Concurrency: inventory writes are serialized across GUI threads and the
+  headless watcher (file lock + atomic temp-file writes, no leftover .tmp).
+- Presence: a device is only aged toward "gone" when its own subnet was
+  actually swept, so scanning a different range no longer marks it gone.
+- Aborted sweeps no longer overwrite the cached last scan; the GUI records a
+  probe's ports/risk to the inventory (was only done from the CLI).
+- AI streaming reads stdout and stderr concurrently (no pipe deadlock), stays
+  responsive to STOP, and always reaps the process and closes its pipes.
+- Sweep builds its target list lazily (large CIDRs) and keeps IPv6-only hosts
+  that discovery adds. TUI selection index is clamped against list changes.
+
 ## [1.6.1] — 2026-09-08
 
 ### Fixed

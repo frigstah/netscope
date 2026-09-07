@@ -977,7 +977,8 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         self.scan_progress.set_fraction(1.0)
 
         # record into the persistent inventory and surface what changed
-        events = store.record_sweep(result.hosts)
+        events = ([] if result.aborted else
+                  store.record_sweep(result.hosts, result.network))
         self._new_ips = {e["ip"] for e in events if e["type"] == store.EV_NEW}
         self._devices = store.load()
         if self._watch_on and events:
@@ -996,7 +997,8 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         self.host_count.set_text(f"{n} hosts  ·  {result.total_probed} probed  ·  {result.duration:.1f}s")
         self.set_status(f"{n} hosts on {result.network}")
         named = sum(1 for h in result.hosts if h.hostname or h.mdns)
-        self.log(f"sweep complete: {n} hosts, {named} named, {result.duration:.1f}s")
+        self.log(f"sweep {'aborted' if result.aborted else 'complete'}: "
+                 f"{n} hosts, {named} named, {result.duration:.1f}s")
         self._update_inventory_badge()
         if self._target_ip and self._target_ip in self._host_index:
             self._select_ip(self._target_ip)
@@ -1142,7 +1144,7 @@ class NetScopeWindow(Gtk.ApplicationWindow):
             return
         store.update_device(item.key, name=name, trusted=trusted)
         self._devices = store.load()
-        item.name = name or item.mdns or item.vendor or item.ip
+        item.name = name or item.vendor or item.ip
         self._enrich_row(item)
         self._update_inventory_badge()
         self.log(f"inventory: {item.ip} named '{name or '(cleared)'}', "
@@ -1253,14 +1255,25 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         self.port_count.set_text(f"{len(hits)} open  ·  {total} probed  ·  {secs:.1f}s")
         self.set_status(f"{ip}: {len(hits)} open ports" + (" (aborted)" if aborted else ""))
         self.log(f"probe complete: {len(hits)} open on {ip} in {secs:.1f}s")
-        self._assess_host(ip, hits)
+        if not aborted:
+            row = self._host_index.get(ip)
+            mac = row.mac if row else next(
+                (d.mac for d in store.load().values() if d.ip == ip), "")
+            events = store.record_probe(ip, mac, hits)
+            if self._watch_on:
+                notify.notify_events(events)
+            for event in events:
+                self._log_event(event)
+            self._assess_host(ip, hits)
         return False
 
     def _assess_host(self, ip: str, hits) -> None:
         findings, score, lvl = assess.assess(hits)
         # persist the score on the device record
         row = self._host_index.get(ip)
-        key = store.device_key(row.mac if row else "", ip)
+        mac = row.mac if row else next(
+            (d.mac for d in store.load().values() if d.ip == ip), "")
+        key = store.device_key(mac, ip)
         store.update_device(key, risk=score)
         self._devices = store.load()
         # badge + summary

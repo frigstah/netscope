@@ -67,6 +67,10 @@ def notify_events(events: list[dict], types: set[str] | None = None) -> int:
     for ev in events:
         if ev.get("type") not in types:
             continue
+        # a randomized/private MAC (phones, some IoT) rejoins under a new MAC
+        # every time, so it always looks "new" — never alert for those
+        if ev.get("randomized") and ev.get("type") in (store.EV_NEW, store.EV_BACK, store.EV_GONE):
+            continue
         head, body = _headline(ev)
         _send(head, body, _GLYPH.get(ev["type"], ""), _URGENCY.get(ev["type"], "normal"))
         sent += 1

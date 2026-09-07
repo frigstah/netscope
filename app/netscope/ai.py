@@ -11,6 +11,8 @@ Two kinds of engine:
 from __future__ import annotations
 
 import json
+import queue
+from collections import deque
 import os
 import shutil
 import subprocess
@@ -143,22 +145,57 @@ def _stream_cli(backend: str, prompt: str, on_delta, on_done, stop) -> None:
 
     collected: list[str] = []
     plain = backend == "codex"
+    lines = queue.Queue()
+    errors = deque(maxlen=8)
+    error = ""
 
     def pump():
         try:
             proc.stdin.write(prompt)
             proc.stdin.close()
-        except (OSError, BrokenPipeError):
+        except (OSError, ValueError):
             pass
 
-    threading.Thread(target=pump, daemon=True).start()
+    def read_stdout():
+        try:
+            for line in proc.stdout:
+                lines.put(line)
+        finally:
+            lines.put(None)
+
+    def read_stderr():
+        while True:
+            chunk = proc.stderr.read(1024)
+            if not chunk:
+                break
+            errors.append(chunk)
+
+    workers = [threading.Thread(target=fn, daemon=True)
+               for fn in (pump, read_stdout, read_stderr)]
+    for worker in workers:
+        worker.start()
 
     try:
-        for line in proc.stdout:
+        while True:
             if stop and stop.is_set():
-                proc.terminate()
-                on_done("".join(collected), "stopped")
-                return
+                error = "stopped"
+                break
+            try:
+                line = lines.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if line is None:
+                # stdout may close before the process exits; keep STOP responsive.
+                while proc.poll() is None:
+                    if stop and stop.wait(0.1):
+                        error = "stopped"
+                        break
+                    if not stop:
+                        try:
+                            proc.wait(timeout=0.1)
+                        except subprocess.TimeoutExpired:
+                            pass
+                break
             line = line.rstrip("\n")
             if not line:
                 continue
@@ -173,23 +210,31 @@ def _stream_cli(backend: str, prompt: str, on_delta, on_done, stop) -> None:
             if backend == "claude":
                 text = _extract_claude_delta(obj)
                 if not text and obj.get("type") == "result" and obj.get("is_error"):
-                    on_done("".join(collected), str(obj.get("result") or "AI error")[:200])
-                    return
+                    error = str(obj.get("result") or "AI error")[:200]
+                    break
             else:
                 text = _extract_gemini_delta(obj)
             if text:
                 collected.append(text)
                 on_delta(text)
     except Exception as e:
-        on_done("".join(collected), str(e)[:200])
-        return
-
-    code = proc.wait()
-    err = ""
-    if code != 0 and not collected:
-        tail = (proc.stderr.read() or "").strip()[-200:]
-        err = f"{backend} exited {code}: {tail}" if tail else f"{backend} exited {code}"
-    on_done("".join(collected), err)
+        error = str(e)[:200]
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+        try:
+            code = proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            code = proc.wait()
+        for worker in workers:
+            worker.join(timeout=1)
+        for stream in (proc.stdin, proc.stdout, proc.stderr):
+            stream.close()
+    if code != 0 and not error:
+        tail = "".join(errors).strip()[-200:]
+        error = f"{backend} exited {code}: {tail}" if tail else f"{backend} exited {code}"
+    on_done("".join(collected), error)
 
 
 def _stream_ollama(prompt: str, on_delta, on_done, stop, model: str) -> None:

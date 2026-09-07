@@ -63,7 +63,7 @@ def cmd_scan(network: str, as_json: bool) -> int:
     if not as_json:
         print(f"sweeping {network} ...", file=sys.stderr)
     result = core.sweep(network, iface)
-    events = store.record_sweep(result.hosts)
+    events = store.record_sweep(result.hosts, result.network)
     notify.notify_events(events)
     if as_json:
         out = result.to_json()
@@ -97,7 +97,7 @@ def cmd_watch(network: str, interval: int) -> int:
         while True:
             try:
                 result = core.sweep(network, iface, resolve_names=True)
-                events = store.record_sweep(result.hosts)
+                events = store.record_sweep(result.hosts, result.network)
                 notify.notify_events(events)
                 stamp = time.strftime("%H:%M:%S")
                 if events:

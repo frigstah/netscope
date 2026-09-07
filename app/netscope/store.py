@@ -12,10 +12,16 @@ Lives in ~/.local/state/netscope/ so it survives cache clears:
 
 from __future__ import annotations
 
+import fcntl
+import ipaddress
 import json
 import os
+import tempfile
+import threading
 import time
 from dataclasses import dataclass, field, asdict
+from functools import wraps
+from itertools import islice
 from pathlib import Path
 from typing import Optional
 
@@ -64,14 +70,36 @@ def device_key(mac: str, ip: str) -> str:
     return m if m else f"ip:{ip}"
 
 
+_write_lock = threading.RLock()
+
+
+def _transaction(fn):
+    """Serialize each read-modify-write across GUI threads and CLI processes."""
+    @wraps(fn)
+    def locked(*args, **kwargs):
+        with _write_lock:
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
+            with (STATE_DIR / "inventory.lock").open("a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                try:
+                    return fn(*args, **kwargs)
+                finally:
+                    fcntl.flock(lock, fcntl.LOCK_UN)
+    return locked
+
+
 def _atomic_write(path: Path, text: str) -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = None
     try:
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(text)
+        with tempfile.NamedTemporaryFile(mode="w", dir=path.parent,
+                                         prefix=path.name + ".", delete=False) as f:
+            tmp = Path(f.name)
+            f.write(text)
         tmp.replace(path)
-    except OSError:
-        pass
+    finally:
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -205,6 +233,7 @@ def _ev(kind: str, dev: Device, detail: str = "") -> dict:
     return {
         "ts": _now(), "type": kind, "key": dev.key, "ip": dev.ip,
         "mac": dev.mac, "name": dev.display_name, "detail": detail,
+        "randomized": dev.randomized,
     }
 
 
@@ -212,9 +241,15 @@ def _ev(kind: str, dev: Device, detail: str = "") -> dict:
 # recording
 # --------------------------------------------------------------------------- #
 
-def record_sweep(hosts: list) -> list[dict]:
+@_transaction
+def record_sweep(hosts: list, network: str = "") -> list[dict]:
     """Update the inventory from a sweep's hosts (core.Host). Returns the
     change events (empty on the very first sweep, which just seeds a baseline)."""
+    # Only age devices whose IPv4 addresses were actually in this sweep.
+    from .core import MAX_SWEEP_HOSTS
+    scanned = ({str(ip) for ip in islice(
+        ipaddress.ip_network(network, strict=False).hosts(), MAX_SWEEP_HOSTS)}
+        if network else set())
     devices = load()
     first_run = not seeded()
     now = _now()
@@ -243,7 +278,7 @@ def record_sweep(hosts: list) -> list[dict]:
         d.missed = 0
 
     for key, d in devices.items():
-        if key in present or not d.present:
+        if key in present or not d.present or d.ip not in scanned:
             continue
         d.missed += 1
         if d.missed >= GONE_THRESHOLD:
@@ -272,6 +307,7 @@ def _fill(d: Device, h) -> Device:
     return d
 
 
+@_transaction
 def record_probe(ip: str, mac: str, hits: list) -> list[dict]:
     """Store a probe's open ports for a device and emit port_new events for
     ports not seen on it before."""
@@ -297,6 +333,7 @@ def record_probe(ip: str, mac: str, hits: list) -> list[dict]:
 # edits + queries
 # --------------------------------------------------------------------------- #
 
+@_transaction
 def update_device(key: str, **changes) -> Optional[Device]:
     devices = load()
     d = devices.get(key)

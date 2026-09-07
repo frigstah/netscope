@@ -17,13 +17,14 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, asdict
+from itertools import islice
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 
 APP_NAME = "NetScope"
 APP_ID = "io.github.frigstah.netscope"
 TAGLINE = "developed for and by frig"
-VERSION = "1.6.1"
+VERSION = "1.6.2"
 
 CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "netscope"
 LAST_SCAN_FILE = CACHE_DIR / "last-scan.json"
@@ -486,6 +487,7 @@ class ScanResult:
     duration: float
     hosts: list[Host]
     total_probed: int
+    aborted: bool = False
 
     def to_json(self) -> dict:
         d = asdict(self)
@@ -555,9 +557,7 @@ def sweep(
     net = ipaddress.ip_network(network, strict=False)
     if net.version != 4:
         raise ValueError("only IPv4 networks are swept")
-    targets = [str(h) for h in net.hosts()]
-    if len(targets) > MAX_SWEEP_HOSTS:
-        targets = targets[:MAX_SWEEP_HOSTS]
+    targets = [str(h) for h in islice(net.hosts(), MAX_SWEEP_HOSTS)]
 
     started = time.time()
     mine = local_addresses()
@@ -623,19 +623,22 @@ def sweep(
                 if val:
                     setattr(h, attr, val)
 
+    hosts = list(found.values())
     if not (stop and stop.is_set()):
         try:
-            _attach_ipv6(list(found.values()), iface)
+            _attach_ipv6(hosts, iface)
         except Exception:
             pass
-    hosts = sorted(found.values(), key=lambda h: h.sort_key)
+    hosts.sort(key=lambda h: h.sort_key)
     result = ScanResult(
         network=str(net), iface=iface, started_at=started,
         duration=time.time() - started, hosts=hosts, total_probed=total,
+        aborted=bool(stop and stop.is_set()),
     )
     try:
-        CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        LAST_SCAN_FILE.write_text(json.dumps(result.to_json()))
+        if not result.aborted:
+            CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            LAST_SCAN_FILE.write_text(json.dumps(result.to_json()))
     except OSError:
         pass
     report("done")

@@ -53,10 +53,11 @@ def _sweep(st: TuiState):
     st.status = f"sweeping {net}…"
     try:
         result = core.sweep(net, iface)
-        store.record_sweep(result.hosts)
+        store.record_sweep(result.hosts, result.network)
         devices = store.load()
         with st.lock:
             st.hosts = result.hosts
+            st.sel = max(0, min(st.sel, len(st.hosts) - 1))
             for h in st.hosts:
                 d = devices.get(store.device_key(h.mac, h.ip))
                 h._trusted = bool(d and d.trusted)
@@ -207,14 +208,17 @@ def _run(scr):
         if c in (ord("q"), 27):
             break
         elif c in (curses.KEY_DOWN, ord("j")):
-            st.sel = min(len(st.hosts) - 1, st.sel + 1)
+            st.sel = max(0, min(len(st.hosts) - 1, st.sel + 1))
         elif c in (curses.KEY_UP, ord("k")):
             st.sel = max(0, st.sel - 1)
         elif c == ord("s") and not st.scanning:
             _bg(_sweep, st)
-        elif c == ord("p") and not st.probing and st.hosts:
-            hh = st.hosts[st.sel]
-            _bg(_probe, st, hh.ip, hh.mac)
+        elif c == ord("p") and not st.probing:
+            with st.lock:
+                st.sel = max(0, min(st.sel, len(st.hosts) - 1))
+                hh = st.hosts[st.sel] if st.hosts else None
+            if hh is not None:
+                _bg(_probe, st, hh.ip, hh.mac)
         elif c == ord("w"):
             st.watch = not st.watch
             st.status = "watch on" if st.watch else "watch off"
