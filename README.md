@@ -40,6 +40,12 @@ and plain sockets. No root, no `nmap`.
   manufacturer and model, says what the device is, and explains what each open
   port is being used for. Uses whichever AI CLI is installed (`claude`, then
   `gemini`, then `codex`); the button stays disabled if none is present.
+- **Security posture** — after a probe, a rules engine grades the device's
+  exposure: a `RISK N/100` badge with a level, and a findings popover that
+  flags plaintext admin (Telnet, FTP), unauthenticated databases (Redis,
+  MongoDB, Elasticsearch), risky management ports (Docker API, RDP, SMB), UPnP
+  and a broad open-port surface. Awareness only — it describes exposure, never
+  how to exploit it, and the findings are fed to the AI investigation too.
 - **Monitoring** — NetScope remembers every device by MAC in a persistent
   inventory. Name a device and mark it trusted from the probe row; untrusted
   present devices show an `UNKN` mark and a count badge (`⚠ N`) by the HOSTS
@@ -92,6 +98,7 @@ netscope                    open the window
 netscope --status [--json]  interfaces, public IP, last sweep, inventory summary
 netscope --scan [CIDR]      sweep (records changes, notifies on new devices)
 netscope --probe IP --ports quick|common|full|22,80,8000-8100
+netscope --assess IP        probe, then grade the security posture
 netscope --watch [--interval N]   sweep on a loop and notify on changes
 netscope --inventory        list remembered devices (P present, T trusted, R randomized MAC)
 netscope --events [--limit N]     recent change events
@@ -133,6 +140,7 @@ io.github.frigstah.netscope/
     ├── core.py        interfaces, public IP, sweep, probe
     ├── store.py       persistent device inventory + event log
     ├── notify.py      desktop notifications
+    ├── assess.py      security-posture rules + risk score
     ├── recon.py       device fingerprint
     ├── ai.py          AI investigation (claude / gemini / codex)
     ├── theme.py       Omarchy colours + font -> GTK CSS

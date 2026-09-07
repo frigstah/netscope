@@ -2,6 +2,20 @@
 
 Notable changes, newest first.
 
+## [1.2.0] — 2026-09-08
+
+Security posture.
+
+### Added
+- `assess.py`: a rules engine that grades a probed device's exposure and
+  returns findings plus a 0-100 risk score (plaintext admin, unauthenticated
+  databases, risky management ports, UPnP, broad open-port surface).
+- GUI: a `RISK N` badge and a findings popover appear after each probe; the
+  score is stored on the device record.
+- CLI `--assess IP`, and `--probe --json` now includes the assessment.
+- The findings are included in the AI investigation prompt so the model
+  corroborates rather than invents.
+
 ## [1.1.0] — 2026-09-08
 
 Continuous monitoring.

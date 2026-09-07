@@ -98,6 +98,7 @@ class Device:
     is_gateway: bool = False
     ports: dict = field(default_factory=dict)   # {"22": "ssh", ...} last probe
     ports_at: float = 0.0
+    risk: int = -1                              # last assessment score, -1 = never assessed
 
     @property
     def display_name(self) -> str:

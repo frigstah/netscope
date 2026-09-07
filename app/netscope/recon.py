@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from . import core
+from . import assess as _assess
 
 
 # TTL -> OS family. Hops lower the observed value, so we snap up to the
@@ -228,6 +229,20 @@ def build_prompt(d: Dossier) -> str:
             if w.auth:
                 bits.append(f"auth: {w.auth}")
             lines.append("  - " + "  |  ".join(bits))
+
+    # local rules-based security assessment, so the model corroborates rather
+    # than invents
+    try:
+        findings, score, level = _assess.assess(d.ports, d)
+        real = [f for f in findings if f.severity != "info"]
+        if real:
+            lines.append("")
+            lines.append(f"Local security assessment (rules-based): risk {score}/100 [{level}]")
+            for f in real:
+                where = f" ({f.port}/tcp)" if f.port else ""
+                lines.append(f"  - [{f.severity}] {f.title}{where}: {f.detail}")
+    except Exception:
+        pass
 
     return "\n".join(lines)
 

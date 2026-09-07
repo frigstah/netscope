@@ -14,7 +14,7 @@ gi.require_version("Gdk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk  # noqa: E402
 
-from . import ai, core, notify, recon, store, theme  # noqa: E402
+from . import ai, assess, core, notify, recon, store, theme  # noqa: E402
 
 KIND_GLYPH = {
     "wifi": "󰖩", "ethernet": "󰈀", "vpn": "󰖂", "virtual": "󰡨",
@@ -535,6 +535,23 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         self.probe_progress = Gtk.ProgressBar()
         box.append(self.probe_progress)
 
+        self.sec_strip = Gtk.Box(spacing=10)
+        self.sec_strip.add_css_class("ns-sec-strip")
+        self.sec_strip.set_visible(False)
+        self.risk_badge = Gtk.Label(label="")
+        self.risk_badge.add_css_class("ns-risk-badge")
+        self.sec_strip.append(self.risk_badge)
+        self.sec_summary = _label("ns-dim")
+        self.sec_summary.set_hexpand(True)
+        self.sec_strip.append(self.sec_summary)
+        self.findings_btn = Gtk.MenuButton(label="FINDINGS")
+        self.findings_btn.add_css_class("ns-ghost")
+        self.findings_pop = Gtk.Popover()
+        self.findings_pop.add_css_class("ns-findings-pop")
+        self.findings_btn.set_popover(self.findings_pop)
+        self.sec_strip.append(self.findings_btn)
+        box.append(self.sec_strip)
+
         sel = Gtk.NoSelection.new(self.port_store)
         view = Gtk.ColumnView.new(sel)
         self.port_view = view
@@ -936,6 +953,7 @@ class NetScopeWindow(Gtk.ApplicationWindow):
             self.port_store.remove_all()
             self.port_count.set_text("")
             self.probe_progress.set_fraction(0)
+            self.sec_strip.set_visible(False)
 
     def _save_identity(self) -> None:
         if getattr(self, "_loading_identity", False):
@@ -1061,7 +1079,63 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         self.port_count.set_text(f"{len(hits)} open  ·  {total} probed  ·  {secs:.1f}s")
         self.set_status(f"{ip}: {len(hits)} open ports" + (" (aborted)" if aborted else ""))
         self.log(f"probe complete: {len(hits)} open on {ip} in {secs:.1f}s")
+        self._assess_host(ip, hits)
         return False
+
+    def _assess_host(self, ip: str, hits) -> None:
+        findings, score, lvl = assess.assess(hits)
+        # persist the score on the device record
+        row = self._host_index.get(ip)
+        key = store.device_key(row.mac if row else "", ip)
+        store.update_device(key, risk=score)
+        self._devices = store.load()
+        # badge + summary
+        self.risk_badge.set_text(f"RISK {score}")
+        for c in ("clean", "low", "elevated", "high"):
+            self.risk_badge.remove_css_class(c)
+        self.risk_badge.add_css_class(lvl)
+        self.risk_badge.set_tooltip_text(f"security posture: {lvl} ({score}/100)")
+        self.sec_summary.set_text(assess.summary_line(findings, score).split("·", 1)[-1].strip())
+        self._fill_findings(findings)
+        self.sec_strip.set_visible(True)
+        real = [f for f in findings if f.severity != "info"]
+        if real:
+            top = real[0]
+            self.log(f"posture {lvl} ({score}/100): {len(real)} finding(s), "
+                     f"top — {top.title}")
+        else:
+            self.log(f"posture clean ({score}/100): nothing notable")
+
+    def _fill_findings(self, findings) -> None:
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        box.set_margin_top(8)
+        box.set_margin_bottom(8)
+        box.set_margin_start(10)
+        box.set_margin_end(10)
+        box.set_size_request(360, -1)
+        for f in findings:
+            row = Gtk.Box(spacing=8)
+            sev = Gtk.Label(label=f.severity.upper())
+            sev.add_css_class("ns-sev")
+            sev.add_css_class(f.severity)
+            sev.set_valign(Gtk.Align.START)
+            sev.set_width_chars(7)
+            sev.set_xalign(0)
+            row.append(sev)
+            col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            title = Gtk.Label(label=f.title + (f"  ·  {f.port}/tcp" if f.port else ""), xalign=0)
+            title.add_css_class("ns-card-title")
+            title.set_wrap(True)
+            det = _label("ns-dim")
+            det.set_text(f.detail)
+            det.set_wrap(True)
+            det.set_xalign(0)
+            det.set_max_width_chars(46)
+            col.append(title)
+            col.append(det)
+            row.append(col)
+            box.append(row)
+        self.findings_pop.set_child(box)
 
     # ---- AI investigation -------------------------------------------------- #
 

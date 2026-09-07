@@ -266,6 +266,37 @@ def css(c: dict[str, str] | None = None) -> str:
     }}
     .ns-bad-live {{ color: {bad}; }}
 
+    .ns-sec-strip {{
+      padding: 5px 12px;
+      border-bottom: 1px solid {rgba(glow, 0.15)};
+      background-color: {rgba(fg, 0.02)};
+    }}
+    .ns-risk-badge {{
+      font-weight: 800;
+      letter-spacing: 1px;
+      font-size: {size - 2}pt;
+      padding: 1px 8px;
+      color: {bg};
+    }}
+    .ns-risk-badge.clean {{ background-color: {good}; }}
+    .ns-risk-badge.low {{ background-color: {rgba(good, 0.8)}; }}
+    .ns-risk-badge.elevated {{ background-color: {warn}; }}
+    .ns-risk-badge.high {{ background-color: {bad}; }}
+    .ns-sev {{
+      font-weight: 800;
+      font-size: {size - 3}pt;
+      letter-spacing: 1px;
+    }}
+    .ns-sev.high {{ color: {bad}; }}
+    .ns-sev.medium {{ color: {warn}; }}
+    .ns-sev.low {{ color: {rgba(good, 0.85)}; }}
+    .ns-sev.info {{ color: {muted}; }}
+    .ns-findings-pop, .ns-findings-pop > contents {{
+      background-color: {bg1};
+      border: 1px solid {rgba(glow, 0.5)};
+      border-radius: 0;
+    }}
+
     dropdown > button, dropdown button.toggle {{
       color: {fg};
       font-weight: 500;

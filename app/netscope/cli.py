@@ -14,7 +14,7 @@ import sys
 import time
 from dataclasses import asdict
 
-from . import core, store, notify
+from . import core, store, notify, assess
 
 
 def _default_network() -> tuple[str, str]:
@@ -163,12 +163,33 @@ def cmd_probe(ip: str, ports: str, as_json: bool) -> int:
             break
     events = store.record_probe(ip, mac, hits)
     notify.notify_events(events)
+    findings, score, lvl = assess.assess(hits)
+    store.update_device(store.device_key(mac, ip), risk=score)
     if as_json:
-        print(json.dumps([asdict(h) for h in hits]))
+        print(json.dumps({"ports": [asdict(h) for h in hits],
+                          "assessment": {"score": score, "level": lvl,
+                                         "findings": assess.findings_json(findings)}}))
         return 0
     for h in hits:
         print(f"  {h.port:>5}/tcp  {h.service:<16} {h.banner}")
-    print(f"{len(hits)} open", file=sys.stderr)
+    print(f"{len(hits)} open · {assess.summary_line(findings, score)}", file=sys.stderr)
+    for f in findings:
+        if f.severity != "info":
+            print(f"  [{f.severity:<6}] {f.title}: {f.detail}", file=sys.stderr)
+    return 0
+
+
+def cmd_assess(ip: str, ports: str, as_json: bool) -> int:
+    plist = core.profile_ports(ports)
+    hits = core.probe(ip, plist)
+    findings, score, lvl = assess.assess(hits)
+    if as_json:
+        print(json.dumps({"ip": ip, "score": score, "level": lvl,
+                          "findings": assess.findings_json(findings)}))
+        return 0
+    print(f"{ip}  {assess.summary_line(findings, score)}  [{lvl}]")
+    for f in findings:
+        print(f"  [{f.severity:<6}] {f.title}: {f.detail}")
     return 0
 
 
@@ -178,6 +199,7 @@ def main(argv=None) -> int:
     ap.add_argument("--status", action="store_true")
     ap.add_argument("--scan", nargs="?", const="", metavar="CIDR")
     ap.add_argument("--probe", metavar="IP")
+    ap.add_argument("--assess", metavar="IP", help="probe then report the security posture")
     ap.add_argument("--watch", nargs="?", const="", metavar="CIDR",
                     help="sweep on an interval and notify on changes")
     ap.add_argument("--interval", type=int, default=120, help="watch interval seconds")
@@ -203,6 +225,8 @@ def main(argv=None) -> int:
         return cmd_events(args.json, args.limit)
     if args.scan is not None:
         return cmd_scan(args.scan, args.json)
+    if args.assess:
+        return cmd_assess(args.assess, args.ports, args.json)
     if args.probe:
         return cmd_probe(args.probe, args.ports, args.json)
 
