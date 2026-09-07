@@ -45,6 +45,11 @@ and plain sockets. No root, no `nmap`.
   `ctrl+shift+I`) for one report that inventories the LAN, ranks the risks, and
   gives concrete recommendations, built from the stored inventory and per-device
   findings.
+- **Device identification** — active discovery (SSDP/UPnP, NetBIOS, and SNMP
+  `sysDescr`, all unprivileged) pulls a device's friendly name, model, and type
+  where it answers, and a heuristic combines that with vendor and open ports to
+  guess a category (router, NAS, camera, printer, media, IoT, VM…). It feeds the
+  AI investigation and is stored on the device.
 - **Security posture** — after a probe, a rules engine grades the device's
   exposure: a `RISK N/100` badge with a level, and a findings popover that
   flags plaintext admin (Telnet, FTP), unauthenticated databases (Redis,
@@ -105,6 +110,7 @@ netscope --status [--json]  interfaces, public IP, last sweep, inventory summary
 netscope --scan [CIDR]      sweep (records changes, notifies on new devices)
 netscope --probe IP --ports quick|common|full|22,80,8000-8100
 netscope --assess IP        probe, then grade the security posture
+netscope --identify IP      active discovery (UPnP/NetBIOS/SNMP) + device-type guess
 netscope --watch [--interval N]   sweep on a loop and notify on changes
 netscope --inventory        list remembered devices (P present, T trusted, R randomized MAC)
 netscope --events [--limit N]     recent change events
@@ -151,6 +157,7 @@ io.github.frigstah.netscope/
     ├── store.py       persistent device inventory + event log
     ├── notify.py      desktop notifications
     ├── assess.py      security-posture rules + risk score
+    ├── discover.py    active discovery (SSDP/UPnP, NetBIOS, SNMP)
     ├── recon.py       device fingerprint
     ├── ai.py          AI investigation (claude / gemini / codex)
     ├── theme.py       Omarchy colours + font -> GTK CSS

@@ -1386,6 +1386,13 @@ class AiScanWindow(Gtk.Window):
             except Exception as e:
                 GLib.idle_add(self._finish, f"fingerprint failed: {e}")
                 return
+            # persist the discovered device type on the inventory record
+            try:
+                key = store.device_key(host.mac if host else "", ip)
+                if dossier.dtype:
+                    store.update_device(key, dtype=dossier.dtype)
+            except Exception:
+                pass
             if stop.is_set():
                 GLib.idle_add(self._finish, "stopped")
                 return

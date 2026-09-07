@@ -14,7 +14,7 @@ import sys
 import time
 from dataclasses import asdict
 
-from . import core, store, notify, assess
+from . import core, store, notify, assess, discover, recon
 
 
 def _default_network() -> tuple[str, str]:
@@ -179,6 +179,39 @@ def cmd_probe(ip: str, ports: str, as_json: bool) -> int:
     return 0
 
 
+def cmd_identify(ip: str, as_json: bool) -> int:
+    disc = discover.enrich(ip)
+    # a light dossier for the type guess (no full probe; use ARP/known ports)
+    from dataclasses import asdict as _asdict
+    hits = core.probe(ip, core.profile_ports("quick"))
+    mac = (core.neighbours().get(ip) or {}).get("mac", "")
+    d = recon.Dossier(ip=ip, mac=mac, vendor=core.vendor_for_mac(mac),
+                      hostname=core._rdns(ip) or core._mdns(ip),
+                      ports=hits, discovery=disc, services=recon._mdns_services(ip))
+    dtype = recon.guess_type(d)
+    out = {"ip": ip, "dtype": dtype,
+           "upnp": _asdict(disc.upnp) if disc.upnp else None,
+           "netbios": _asdict(disc.netbios) if disc.netbios else None,
+           "snmp": disc.snmp}
+    if as_json:
+        print(json.dumps(out))
+        return 0
+    print(f"{ip}  device type: {dtype}")
+    if disc.upnp:
+        u = disc.upnp
+        print(f"  upnp     {u.friendly_name or u.server}"
+              + (f"  ·  {u.model}" if u.model else "")
+              + (f"  ·  {u.device_type}" if u.device_type else ""))
+    if disc.netbios and (disc.netbios.name or disc.netbios.workgroup):
+        nb = disc.netbios
+        print(f"  netbios  {nb.name}  workgroup={nb.workgroup}" + ("  [server]" if nb.is_server else ""))
+    if disc.snmp:
+        print(f"  snmp     {disc.snmp}")
+    if not (disc.upnp or (disc.netbios and disc.netbios.name) or disc.snmp):
+        print("  (no UPnP/NetBIOS/SNMP response — guess is from vendor + open ports)")
+    return 0
+
+
 def cmd_assess(ip: str, ports: str, as_json: bool) -> int:
     plist = core.profile_ports(ports)
     hits = core.probe(ip, plist)
@@ -200,6 +233,7 @@ def main(argv=None) -> int:
     ap.add_argument("--scan", nargs="?", const="", metavar="CIDR")
     ap.add_argument("--probe", metavar="IP")
     ap.add_argument("--assess", metavar="IP", help="probe then report the security posture")
+    ap.add_argument("--identify", metavar="IP", help="active discovery (UPnP/NetBIOS/SNMP) + device-type guess")
     ap.add_argument("--watch", nargs="?", const="", metavar="CIDR",
                     help="sweep on an interval and notify on changes")
     ap.add_argument("--interval", type=int, default=120, help="watch interval seconds")
@@ -225,6 +259,8 @@ def main(argv=None) -> int:
         return cmd_events(args.json, args.limit)
     if args.scan is not None:
         return cmd_scan(args.scan, args.json)
+    if args.identify:
+        return cmd_identify(args.identify, args.json)
     if args.assess:
         return cmd_assess(args.assess, args.ports, args.json)
     if args.probe:

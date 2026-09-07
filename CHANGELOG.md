@@ -2,6 +2,18 @@
 
 Notable changes, newest first.
 
+## [1.4.0] — 2026-09-08
+
+Device identification.
+
+### Added
+- `discover.py`: unprivileged active discovery — SSDP/UPnP (friendly name,
+  model, device type), NetBIOS name query, and SNMP `sysDescr` (public).
+- A device-type heuristic (router, NAS, camera, printer, media, IoT, VM,
+  file server, …) combining discovery with vendor and open ports.
+- Discovery and the type guess are folded into the AI fingerprint and stored
+  on the device record. New CLI `netscope --identify IP`.
+
 ## [1.3.0] — 2026-09-08
 
 Local AI and whole-network summary.

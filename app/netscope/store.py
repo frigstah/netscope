@@ -99,6 +99,7 @@ class Device:
     ports: dict = field(default_factory=dict)   # {"22": "ssh", ...} last probe
     ports_at: float = 0.0
     risk: int = -1                              # last assessment score, -1 = never assessed
+    dtype: str = ""                             # discovered device type
 
     @property
     def display_name(self) -> str:

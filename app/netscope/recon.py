@@ -13,6 +13,7 @@ from typing import Optional
 
 from . import core
 from . import assess as _assess
+from . import discover as _discover
 
 
 # TTL -> OS family. Hops lower the observed value, so we snap up to the
@@ -134,6 +135,8 @@ class Dossier:
     ports: list = field(default_factory=list)       # core.PortHit
     services: list = field(default_factory=list)     # MdnsService
     https: list = field(default_factory=list)        # HttpInfo
+    discovery: object = None                          # discover.Discovery
+    dtype: str = ""                                   # best device-type guess
 
 
 def fingerprint(ip: str, host: Optional["core.Host"], hits: list,
@@ -164,6 +167,12 @@ def fingerprint(ip: str, host: Optional["core.Host"], hits: list,
     say("resolving mDNS services")
     d.services = _mdns_services(ip)
 
+    say("active discovery (upnp/netbios/snmp)")
+    try:
+        d.discovery = _discover.enrich(ip, progress=lambda m: say(m))
+    except Exception:
+        d.discovery = None
+
     d.ports = list(hits)
     for h in d.ports:
         if h.port in core.HTTP_PORTS or h.service in ("http", "https", "http-alt", "https-alt", "http-proxy"):
@@ -172,7 +181,57 @@ def fingerprint(ip: str, host: Optional["core.Host"], hits: list,
             info = _http_probe(ip, h.port, scheme)
             if info:
                 d.https.append(info)
+    d.dtype = guess_type(d)
     return d
+
+
+_CAMERA_VENDORS = ("d-link", "hikvision", "dahua", "reolink", "amcrest", "wyze", "axis", "ubiquiti")
+_ROUTER_VENDORS = ("asustek", "asus", "tp-link", "netgear", "ubiquiti", "mikrotik", "d-link", "zyxel")
+
+
+def guess_type(d: "Dossier") -> str:
+    """Best-effort device category from every signal we have."""
+    ports = {h.port for h in (d.ports or [])}
+    vendor = (d.vendor or "").lower()
+    up = getattr(d, "discovery", None)
+    up = up.upnp if up else None
+    utype = (up.device_type or "").lower() if up else ""
+    umodel = (up.model or "").lower() if up else ""
+    services = " ".join(getattr(s, "service", "") for s in (d.services or [])).lower()
+    hay = f"{vendor} {umodel} {services} {d.hostname or ''}".lower()
+
+    file_ports = ports & {445, 139, 2049, 548}
+    is_camera_vendor = any(v in vendor for v in _CAMERA_VENDORS) and ("cam" in hay or "dcs" in hay or "ipc" in hay)
+
+    if d.is_gateway or "internetgateway" in utype:
+        return "router / gateway"
+    if "synology" in vendor or "qnap" in vendor or "truenas" in hay or (ports & {5000, 5001} and file_ports):
+        return "NAS / file server"
+    if "mediarenderer" in utype or "mediaserver" in utype or ports & {8009, 32400, 8008} or "airplay" in services or "cast" in services or "shield" in services:
+        return "media / streaming device"
+    if is_camera_vendor or ((ports & {554} or "rtsp" in services) and not file_ports):
+        return "camera"
+    if ports & {9100, 515, 631} or "printer" in hay or "ipp" in services:
+        return "printer"
+    if "proxmox" in vendor:
+        return "VM / container"
+    if "home-assistant" in services or 8123 in ports:
+        return "home automation hub"
+    if any(v in vendor for v in ("dreame", "roborock", "ecovacs")):
+        return "robot vacuum"
+    if any(v in vendor for v in ("espressif", "tuya", "sonoff", "shelly", "winner micro")) or ports & {1883, 8883}:
+        return "IoT device"
+    if file_ports:
+        return "file server / Windows host"
+    if any(v in vendor for v in _ROUTER_VENDORS):
+        return "network gear (AP/switch/router)"
+    if "apple" in vendor:
+        return "Apple device"
+    if "google" in vendor:
+        return "Google device"
+    if 22 in ports and not (ports - {22}):
+        return "server / headless host"
+    return "unknown"
 
 
 def build_prompt(d: Dossier) -> str:
@@ -229,6 +288,32 @@ def build_prompt(d: Dossier) -> str:
             if w.auth:
                 bits.append(f"auth: {w.auth}")
             lines.append("  - " + "  |  ".join(bits))
+
+    disc = getattr(d, "discovery", None)
+    if disc is not None:
+        up, nb, snmp = disc.upnp, disc.netbios, disc.snmp
+        extra = []
+        if up:
+            bits = [x for x in (up.friendly_name, up.model, up.manufacturer) if x]
+            if bits:
+                extra.append("UPnP: " + " / ".join(bits))
+            if up.device_type:
+                extra.append("UPnP deviceType: " + up.device_type)
+            if up.server:
+                extra.append("UPnP server: " + up.server)
+        if nb and (nb.name or nb.workgroup):
+            extra.append(f"NetBIOS: {nb.name}" + (f" (workgroup {nb.workgroup})" if nb.workgroup else "")
+                         + (" [server]" if nb.is_server else ""))
+        if snmp:
+            extra.append("SNMP sysDescr: " + snmp)
+        if extra:
+            lines.append("")
+            lines.append("Active discovery:")
+            for e in extra:
+                lines.append("  - " + e)
+    if getattr(d, "dtype", ""):
+        lines.append("")
+        lines.append(f"Heuristic device type (local guess): {d.dtype}")
 
     # local rules-based security assessment, so the model corroborates rather
     # than invents
