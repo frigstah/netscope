@@ -24,7 +24,7 @@ from typing import Callable, Iterable, Optional
 APP_NAME = "NetScope"
 APP_ID = "io.github.frigstah.netscope"
 TAGLINE = "developed for and by frig"
-VERSION = "1.6.2"
+VERSION = "1.6.3"
 
 CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "netscope"
 LAST_SCAN_FILE = CACHE_DIR / "last-scan.json"

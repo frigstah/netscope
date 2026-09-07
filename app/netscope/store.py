@@ -32,7 +32,7 @@ EVENTS_FILE = STATE_DIR / "events.jsonl"
 META_FILE = STATE_DIR / "meta.json"
 
 # a device must be missing from this many consecutive sweeps before it counts
-# as "gone" — one dropped ping should not fire an alert
+# as "gone" - one dropped ping should not fire an alert
 GONE_THRESHOLD = 2
 EVENTS_KEEP = 2000
 

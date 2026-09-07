@@ -1019,7 +1019,7 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         self.inv_badge.set_label(f"⚠ {u}" if u else "✓")
         self.inv_badge.set_tooltip_text(
             (f"{u} device(s) present that you have not marked trusted" if u
-             else "every present device is trusted") + " — click WATCH to monitor")
+             else "every present device is trusted") + " - click WATCH to monitor")
         self.inv_badge.remove_css_class("alert")
         self.inv_badge.remove_css_class("ok")
         self.inv_badge.add_css_class("alert" if u else "ok")
@@ -1154,7 +1154,7 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         if on and not self._watch_on:
             self._watch_on = True
             self._watch_source = GLib.timeout_add_seconds(self._watch_interval, self._watch_tick)
-            self.log(f"watch on — sweeping every {self._watch_interval}s, notifying on changes")
+            self.log(f"watch on - sweeping every {self._watch_interval}s, notifying on changes")
         elif not on and self._watch_on:
             self._watch_on = False
             if self._watch_source:
@@ -1289,7 +1289,7 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         if real:
             top = real[0]
             self.log(f"posture {lvl} ({score}/100): {len(real)} finding(s), "
-                     f"top — {top.title}")
+                     f"top - {top.title}")
         else:
             self.log(f"posture clean ({score}/100): nothing notable")
 
@@ -1361,7 +1361,7 @@ class NetScopeWindow(Gtk.ApplicationWindow):
             return
         devices = [asdict(d) for d in store.load().values()]
         if not devices:
-            self.log("run a scan first — nothing in the inventory to summarize")
+            self.log("run a scan first - nothing in the inventory to summarize")
             return
         win = AiScanWindow(self, "network", backend=self._ai_backend, mode="network",
                            devices=devices, public=dict(self._public))

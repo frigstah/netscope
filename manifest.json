@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.frigstah.netscope",
   "name": "NetScope",
-  "version": "1.6.2",
+  "version": "1.6.3",
   "author": "frig",
   "license": "MIT",
   "description": "LAN reconnaissance for Omarchy: local IPs per interface, public IP, every unit on the network and a port probe for any of them. Developed for and by frig.",
@@ -21,7 +21,8 @@
     "defaults": {
       "pollSeconds": 30,
       "autoScanOnOpen": false,
-      "barGlyph": "access-point"
+      "barGlyph": "access-point",
+      "alertOnUnknown": false
     },
     "schema": [
       {
@@ -37,6 +38,13 @@
         ],
         "defaultValue": "access-point",
         "description": "Which glyph to show in the bar. access-point and radar sit lowest."
+      },
+      {
+        "key": "alertOnUnknown",
+        "type": "boolean",
+        "label": "Tint icon on unknown device",
+        "defaultValue": false,
+        "description": "When on, the bar icon turns urgent while an untrusted device is present. Off means the icon always follows the theme."
       },
       {
         "key": "pollSeconds",

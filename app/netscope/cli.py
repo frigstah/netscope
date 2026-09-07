@@ -249,7 +249,7 @@ def cmd_identify(ip: str, as_json: bool) -> int:
     if disc.snmp:
         print(f"  snmp     {disc.snmp}")
     if not (disc.upnp or (disc.netbios and disc.netbios.name) or disc.snmp):
-        print("  (no UPnP/NetBIOS/SNMP response — guess is from vendor + open ports)")
+        print("  (no UPnP/NetBIOS/SNMP response - guess is from vendor + open ports)")
     return 0
 
 

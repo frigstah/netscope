@@ -2,7 +2,15 @@
 
 Notable changes, newest first.
 
-## [1.6.2] — 2026-09-08
+## [1.6.3] - 2026-09-08
+
+### Changed
+- The bar icon now follows the theme colour by default. A new "Tint icon on
+  unknown device" setting (off by default) makes it turn urgent while an
+  untrusted device is present.
+- Replaced em dashes with hyphens throughout the docs and UI text.
+
+## [1.6.2] - 2026-09-08
 
 ### Fixed
 - Notification flood: devices with randomized/private MACs (phones, some IoT)
@@ -20,7 +28,7 @@ Notable changes, newest first.
 - Sweep builds its target list lazily (large CIDRs) and keeps IPv6-only hosts
   that discovery adds. TUI selection index is clamped against list changes.
 
-## [1.6.1] — 2026-09-08
+## [1.6.1] - 2026-09-08
 
 ### Fixed
 - Marking a device trusted now updates the row immediately: list cells are
@@ -32,21 +40,21 @@ Notable changes, newest first.
 ### Changed
 - Bar icon renders through OpticalGlyph so it sits at the same height as the
   other bar icons; a new "Bar icon" setting picks the glyph (access-point,
-  radar, wifi, crosshairs, lan) — default access-point.
+  radar, wifi, crosshairs, lan) - default access-point.
 
-## [1.6.0] — 2026-09-08
+## [1.6.0] - 2026-09-08
 
 Reports, actions, and a terminal UI.
 
 ### Added
 - `report.py`: export the inventory as JSON, CSV, Markdown, or a self-contained
   HTML page. GUI `ctrl+E`, CLI `netscope --report FMT [--out FILE] [--sanitized]`.
-- `actions.py`: per-device `⋯` menu in the window — open web UI, SSH, Wake-on-LAN
+- `actions.py`: per-device `⋯` menu in the window - open web UI, SSH, Wake-on-LAN
   (`core.wake_on_lan`, `netscope --wake MAC`), ping, copy IP.
 - `tui.py`: a dependency-free curses terminal UI (`netscope --tui`) with
   interfaces, Wi-Fi, public IP, a live host list, sweep, probe and watch.
 
-## [1.5.0] — 2026-09-08
+## [1.5.0] - 2026-09-08
 
 IPv6 and Wi-Fi context.
 
@@ -56,19 +64,19 @@ IPv6 and Wi-Fi context.
 - IPv6: sweeps read the v6 neighbour table (ping ff02::1), attach global v6
   addresses to hosts by MAC, add v6-only neighbours, and tag hosts `+v6`.
 
-## [1.4.0] — 2026-09-08
+## [1.4.0] - 2026-09-08
 
 Device identification.
 
 ### Added
-- `discover.py`: unprivileged active discovery — SSDP/UPnP (friendly name,
+- `discover.py`: unprivileged active discovery - SSDP/UPnP (friendly name,
   model, device type), NetBIOS name query, and SNMP `sysDescr` (public).
 - A device-type heuristic (router, NAS, camera, printer, media, IoT, VM,
   file server, …) combining discovery with vendor and open ports.
 - Discovery and the type guess are folded into the AI fingerprint and stored
   on the device record. New CLI `netscope --identify IP`.
 
-## [1.3.0] — 2026-09-08
+## [1.3.0] - 2026-09-08
 
 Local AI and whole-network summary.
 
@@ -81,7 +89,7 @@ Local AI and whole-network summary.
   `ctrl+shift+I` for one report that inventories the LAN, ranks risks, and
   recommends fixes, built from the stored inventory and per-device findings.
 
-## [1.2.0] — 2026-09-08
+## [1.2.0] - 2026-09-08
 
 Security posture.
 
@@ -95,7 +103,7 @@ Security posture.
 - The findings are included in the AI investigation prompt so the model
   corroborates rather than invents.
 
-## [1.1.0] — 2026-09-08
+## [1.1.0] - 2026-09-08
 
 Continuous monitoring.
 
@@ -111,7 +119,7 @@ Continuous monitoring.
 - New CLI: `--watch`, `--inventory`, `--events`; `--scan`/`--status` now record
   and report the inventory. The bar icon tints while unknown devices are present.
 
-## [1.0.0] — 2026-09-07
+## [1.0.0] - 2026-09-07
 
 First release. Developed for and by frig.
 

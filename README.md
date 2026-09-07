@@ -6,7 +6,7 @@
 
 Local IP per interface, your public IP with ISP and location, every unit on the
 network, a TCP port probe for any of them, and an AI investigation that names
-the device and explains what each open port is for — in a window themed to
+the device and explains what each open port is for - in a window themed to
 whatever Omarchy theme you are running.
 
 <sub>Developed for and by frig.</sub>
@@ -22,55 +22,55 @@ whatever Omarchy theme you are running.
 A bar widget with a glance popout, and a full window for the real work. The
 popout is a thin face over the command line (`bin/netscope`); everything it
 shows comes from `netscope --status --json`, so the bar and the app always
-agree. Everything runs unprivileged — `ip`, `ping`, `avahi-resolve`, `curl`
+agree. Everything runs unprivileged - `ip`, `ping`, `avahi-resolve`, `curl`
 and plain sockets. No root, no `nmap`.
 
-- **Interfaces** — every network card with its IPv4/IPv6, MAC, state and
+- **Interfaces** - every network card with its IPv4/IPv6, MAC, state and
   gateway. Click an address to copy it.
-- **Public** — your public IPv4/IPv6, ISP, ASN and rough location, cached ten
+- **Public** - your public IPv4/IPv6, ISP, ASN and rough location, cached ten
   minutes with a refresh on demand.
-- **Hosts** — every unit on the chosen network. A ping sweep plus the ARP
+- **Hosts** - every unit on the chosen network. A ping sweep plus the ARP
   table, so devices that ignore ping still show up, with reverse-DNS, mDNS
   names and MAC-vendor lookup.
-- **Probe** — pick a host and probe its TCP ports. Profiles: Quick (~150
+- **Probe** - pick a host and probe its TCP ports. Profiles: Quick (~150
   ports), Common (1-1024 plus well-known high ports), Full (all 65535) or a
   custom list like `22,80,8000-8100`. Grabs service banners where it can.
-- **AI SCAN** — fingerprints the selected device (open ports, banners, mDNS
+- **AI SCAN** - fingerprints the selected device (open ports, banners, mDNS
   services, HTTP titles, TTL) and streams an AI report that identifies the
   manufacturer and model, says what the device is, and explains what each open
   port is being used for. Pick the engine per investigation: a cloud CLI
   (`claude`, `gemini`, `codex`) or a **local Ollama** model, so a private
   investigation never leaves your machine.
-- **Whole-network AI summary** — click the `⚠ N` badge by the HOSTS title (or
+- **Whole-network AI summary** - click the `⚠ N` badge by the HOSTS title (or
   `ctrl+shift+I`) for one report that inventories the LAN, ranks the risks, and
   gives concrete recommendations, built from the stored inventory and per-device
   findings.
-- **Device identification** — active discovery (SSDP/UPnP, NetBIOS, and SNMP
+- **Device identification** - active discovery (SSDP/UPnP, NetBIOS, and SNMP
   `sysDescr`, all unprivileged) pulls a device's friendly name, model, and type
   where it answers, and a heuristic combines that with vendor and open ports to
   guess a category (router, NAS, camera, printer, media, IoT, VM…). It feeds the
   AI investigation and is stored on the device.
-- **Security posture** — after a probe, a rules engine grades the device's
+- **Security posture** - after a probe, a rules engine grades the device's
   exposure: a `RISK N/100` badge with a level, and a findings popover that
   flags plaintext admin (Telnet, FTP), unauthenticated databases (Redis,
   MongoDB, Elasticsearch), risky management ports (Docker API, RDP, SMB), UPnP
-  and a broad open-port surface. Awareness only — it describes exposure, never
+  and a broad open-port surface. Awareness only - it describes exposure, never
   how to exploit it, and the findings are fed to the AI investigation too.
-- **Wi-Fi context** — a WI-FI panel in the sidebar shows the current SSID,
+- **Wi-Fi context** - a WI-FI panel in the sidebar shows the current SSID,
   signal (percent and dBm), band and channel, link rate and security, from
   `nmcli` and `iw`.
-- **IPv6** — sweeps also read the IPv6 neighbour table (pinging the all-nodes
+- **IPv6** - sweeps also read the IPv6 neighbour table (pinging the all-nodes
   multicast group), attach global v6 addresses to hosts by MAC, and add any
   v6-only neighbours; hosts with IPv6 are tagged `+v6`.
-- **Actions** — a `⋯` menu on the selected device: open its web UI (picks the
+- **Actions** - a `⋯` menu on the selected device: open its web UI (picks the
   right http/https port), SSH, send a Wake-on-LAN magic packet, ping in a
   terminal, or copy the IP.
-- **Reports** — export the inventory as JSON, CSV, Markdown, or a self-contained
+- **Reports** - export the inventory as JSON, CSV, Markdown, or a self-contained
   HTML page (`ctrl+E` in the window, or `netscope --report`); `--sanitized`
   masks the public IP and location for sharing.
-- **Terminal mode** — `netscope --tui`, a dependency-free curses UI with the
+- **Terminal mode** - `netscope --tui`, a dependency-free curses UI with the
   same interfaces, Wi-Fi, public IP, live host list, sweep and probe.
-- **Monitoring** — NetScope remembers every device by MAC in a persistent
+- **Monitoring** - NetScope remembers every device by MAC in a persistent
   inventory. Name a device and mark it trusted from the probe row; untrusted
   present devices show an `UNKN` mark and a count badge (`⚠ N`) by the HOSTS
   title. Turn on **WATCH** (top bar) to keep sweeping, and get a desktop
@@ -80,10 +80,10 @@ and plain sockets. No root, no `nmap`.
 ## Requirements
 
 - `python3`, `python-gobject`, `gtk4`, `libadwaita` (`omarchy pkg add python-gobject gtk4 libadwaita`)
-- `iproute2`, `iputils` (ping), `curl` — present on stock Omarchy
+- `iproute2`, `iputils` (ping), `curl` - present on stock Omarchy
 - `avahi` for mDNS names, `networkmanager`/`iw` for the Wi-Fi panel (optional)
 - for AI SCAN: a cloud AI CLI (`claude`, `gemini` or `codex`) **or** a local
-  [Ollama](https://ollama.com) (`ollama serve` on `localhost:11434`) — optional
+  [Ollama](https://ollama.com) (`ollama serve` on `localhost:11434`) - optional
 
 ## Install
 
@@ -99,10 +99,10 @@ credentials can reach it (SSH key or a token) before running `plugin add`.
 
 ## Bar widget
 
-- **left** — popout (interfaces, public IP, last sweep)
-- **right** — open the NetScope window
-- **middle** — background LAN sweep
-- popout keys — `o` open, `s` sweep, `r` refresh, `c` copy public IP, arrows + enter
+- **left** - popout (interfaces, public IP, last sweep)
+- **right** - open the NetScope window
+- **middle** - background LAN sweep
+- popout keys - `o` open, `s` sweep, `r` refresh, `c` copy public IP, arrows + enter
 - the bar icon tints urgent while any untrusted device is present, and the popout shows the unknown count
 
 Settings live under the `io.github.frigstah.netscope` entry in `~/.config/omarchy/shell.json`:
@@ -153,7 +153,7 @@ live in `~/.local/state/netscope/`. Stop it with
 
 The LAN sweep, port probe and fingerprint stay on your machine. The AI SCAN
 sends the collected evidence about the selected device to whichever AI CLI you
-have installed, which talks to that tool's own provider — so that one feature
+have installed, which talks to that tool's own provider - so that one feature
 leaves your machine by design. Choose the **Ollama** engine in the AI window to
 run the investigation fully on-device instead, or skip AI SCAN entirely.
 

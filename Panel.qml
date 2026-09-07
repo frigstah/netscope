@@ -23,6 +23,9 @@ Panel {
     "access-point": "󰀃", "radar": "󰆤", "wifi": "󰤨", "lan": "󰛳", "crosshairs": ""
   })
   readonly property string barGlyphName: setting("barGlyph", "access-point")
+  // off by default: the icon follows the theme; turn on to tint it when an
+  // unknown (untrusted) device is present
+  readonly property bool alertOnUnknown: setting("alertOnUnknown", false) === true
   readonly property string barGlyph: glyphMap[barGlyphName] || glyphMap["access-point"]
   readonly property int pollSeconds: Math.max(5, setting("pollSeconds", 30))
   readonly property bool autoScanOnOpen: setting("autoScanOnOpen", false) === true
@@ -217,7 +220,8 @@ Panel {
           fontFamily: root.fontFamily
           fontSize: Style.font.icon
           color: root.scanning ? Qt.darker(root.barForeground, 1.5)
-                               : (root.unknownCount > 0 ? root.urgent : root.barForeground)
+                               : ((root.alertOnUnknown && root.unknownCount > 0)
+                                  ? root.urgent : root.barForeground)
         }
       }
     }

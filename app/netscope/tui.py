@@ -24,7 +24,7 @@ class TuiState:
         self.sel = 0
         self.scanning = False
         self.probing = False
-        self.status = "ready — press s to sweep"
+        self.status = "ready - press s to sweep"
         self.public = None
         self.wifi = None
         self.ports: list = []
@@ -117,7 +117,7 @@ def _draw(scr, st: TuiState):
     for i in core.interfaces():
         if i.kind == "loopback":
             continue
-        v4 = i.ipv4[0].cidr if i.ipv4 else "—"
+        v4 = i.ipv4[0].cidr if i.ipv4 else "-"
         tag = "DEFAULT" if i.is_default else i.state.upper()
         put(y, 1, f"{i.name:<11} {tag:<7} {v4}", 0, i.up); y += 1
     if st.wifi:
@@ -129,7 +129,7 @@ def _draw(scr, st: TuiState):
         y += 1
         put(y, 0, "PUBLIC", 1, True); y += 1
         p = st.public
-        put(y, 1, p.get("ipv4") or p.get("error") or "—", 2, True); y += 1
+        put(y, 1, p.get("ipv4") or p.get("error") or "-", 2, True); y += 1
         put(y, 1, f"{p.get('org','')}  {p.get('city','')} {p.get('country','')}", 3); y += 1
 
     # host list (right of a divider)

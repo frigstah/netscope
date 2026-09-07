@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# NetScope — post-install setup. Developed for and by frig.
+# NetScope - post-install setup. Developed for and by frig.
 #
 #   ./install.sh              link the CLI, install the launcher, check deps
 #   ./install.sh --enable     also add the bar widget to the right section
@@ -24,9 +24,9 @@ if ((${#missing[@]})); then
   echo "  install with: omarchy pkg add python-gobject gtk4 libadwaita" >&2
   exit 1
 fi
-command -v avahi-resolve >/dev/null || echo "note: avahi not found — mDNS names will be skipped (optional)"
+command -v avahi-resolve >/dev/null || echo "note: avahi not found - mDNS names will be skipped (optional)"
 command -v claude >/dev/null || command -v gemini >/dev/null || command -v codex >/dev/null \
-  || echo "note: no AI CLI found (claude/gemini/codex) — the AI SCAN button stays disabled (optional)"
+  || echo "note: no AI CLI found (claude/gemini/codex) - the AI SCAN button stays disabled (optional)"
 
 # --- link the CLI ---------------------------------------------------------- #
 mkdir -p "$HOME/.local/bin"
