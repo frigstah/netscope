@@ -101,17 +101,31 @@ def _text_column(title: str, attr: str, css: str = "", expand: bool = False,
                  fmt=None, fixed: int = 0) -> Gtk.ColumnViewColumn:
     factory = Gtk.SignalListItemFactory()
 
+    prop = attr.replace("_", "-")
+
     def setup(_f, item):
         item.set_child(_label(css))
 
     def bind(_f, item):
         obj = item.get_item()
         lbl = item.get_child()
-        val = obj.get_property(attr)
-        lbl.set_text(fmt(val) if fmt else str(val))
+
+        def upd(*_a):
+            val = obj.get_property(attr)
+            lbl.set_text(fmt(val) if fmt else str(val))
+
+        upd()
+        item._hid = (obj, obj.connect(f"notify::{prop}", upd))
+
+    def unbind(_f, item):
+        pair = getattr(item, "_hid", None)
+        if pair:
+            pair[0].disconnect(pair[1])
+            item._hid = None
 
     factory.connect("setup", setup)
     factory.connect("bind", bind)
+    factory.connect("unbind", unbind)
     col = Gtk.ColumnViewColumn.new(title, factory)
     col.set_expand(expand)
     col.set_resizable(True)
@@ -161,9 +175,7 @@ def _mark_column() -> Gtk.ColumnViewColumn:
         box.append(lbl)
         item.set_child(box)
 
-    def bind(_f, item):
-        lbl = item.get_child().get_first_child()
-        m = item.get_item().mark
+    def apply(lbl, m):
         lbl.set_text(m)
         lbl.set_visible(bool(m))
         for c in ("new", "trust", "unkn"):
@@ -175,10 +187,27 @@ def _mark_column() -> Gtk.ColumnViewColumn:
         elif m == "UNKN":
             lbl.add_css_class("unkn")
 
+    def bind(_f, item):
+        obj = item.get_item()
+        lbl = item.get_child().get_first_child()
+
+        def upd(*_a):
+            apply(lbl, obj.mark)
+
+        upd()
+        item._hid = (obj, obj.connect("notify::mark", upd))
+
+    def unbind(_f, item):
+        pair = getattr(item, "_hid", None)
+        if pair:
+            pair[0].disconnect(pair[1])
+            item._hid = None
+
     factory.connect("setup", setup)
     factory.connect("bind", bind)
-    col = Gtk.ColumnViewColumn.new("", factory)
-    col.set_fixed_width(58)
+    factory.connect("unbind", unbind)
+    col = Gtk.ColumnViewColumn.new("STATUS", factory)
+    col.set_fixed_width(78)
     return col
 
 
@@ -192,10 +221,7 @@ def _flag_column() -> Gtk.ColumnViewColumn:
         box.append(lbl)
         item.set_child(box)
 
-    def bind(_f, item):
-        obj = item.get_item()
-        lbl = item.get_child().get_first_child()
-        flag = obj.flag
+    def apply(lbl, flag):
         lbl.set_text(flag)
         lbl.set_visible(bool(flag))
         for c in ("gw", "arp"):
@@ -205,8 +231,25 @@ def _flag_column() -> Gtk.ColumnViewColumn:
         elif flag == "ARP":
             lbl.add_css_class("arp")
 
+    def bind(_f, item):
+        obj = item.get_item()
+        lbl = item.get_child().get_first_child()
+
+        def upd(*_a):
+            apply(lbl, obj.flag)
+
+        upd()
+        item._hid = (obj, obj.connect("notify::flag", upd))
+
+    def unbind(_f, item):
+        pair = getattr(item, "_hid", None)
+        if pair:
+            pair[0].disconnect(pair[1])
+            item._hid = None
+
     factory.connect("setup", setup)
     factory.connect("bind", bind)
+    factory.connect("unbind", unbind)
     col = Gtk.ColumnViewColumn.new("", factory)
     col.set_fixed_width(64)
     return col

@@ -245,6 +245,12 @@ def css(c: dict[str, str] | None = None) -> str:
       font-weight: 500;
       letter-spacing: 1px;
     }}
+    button.toggle:checked, togglebutton:checked, button.ns-ghost:checked {{
+      color: {bg};
+      background-color: {glow};
+      border-color: {glow};
+      font-weight: 800;
+    }}
     button.ns-ai {{
       color: {bg};
       background-color: {glow};

@@ -2,6 +2,20 @@
 
 Notable changes, newest first.
 
+## [1.6.1] — 2026-09-08
+
+### Fixed
+- Marking a device trusted now updates the row immediately: list cells are
+  reactive to property changes (STATUS, name, and flag columns), and the TRUST
+  toggle shows a clear checked state.
+- The device STATUS column (UNKN / TRUST / NEW) is now labeled so the "unknown"
+  status is self-explanatory.
+
+### Changed
+- Bar icon renders through OpticalGlyph so it sits at the same height as the
+  other bar icons; a new "Bar icon" setting picks the glyph (access-point,
+  radar, wifi, crosshairs, lan) — default access-point.
+
 ## [1.6.0] — 2026-09-08
 
 Reports, actions, and a terminal UI.

@@ -17,6 +17,13 @@ Panel {
   ipcTarget: "io.github.frigstah.netscope"
 
   readonly property string bin: Quickshell.env("HOME") + "/.config/omarchy/plugins/io.github.frigstah.netscope/bin/netscope"
+  // Bar glyph: a few compact, network-flavoured options. OpticalGlyph centres
+  // them so they sit at the same height as the neighbouring bar icons.
+  readonly property var glyphMap: ({
+    "access-point": "󰀃", "radar": "󰕰", "wifi": "󰤨", "lan": "󰛳", "crosshairs": "󰆤"
+  })
+  readonly property string barGlyphName: setting("barGlyph", "access-point")
+  readonly property string barGlyph: glyphMap[barGlyphName] || glyphMap["access-point"]
   readonly property int pollSeconds: Math.max(5, setting("pollSeconds", 30))
   readonly property bool autoScanOnOpen: setting("autoScanOnOpen", false) === true
 
@@ -204,13 +211,13 @@ Panel {
         width: Style.font.icon
         height: Style.font.icon
 
-        Text {
-          anchors.centerIn: parent
-          text: "󰛳"
+        OpticalGlyph {
+          anchors.fill: parent
+          text: root.barGlyph
+          fontFamily: root.fontFamily
+          fontSize: Style.font.icon
           color: root.scanning ? Qt.darker(root.barForeground, 1.5)
                                : (root.unknownCount > 0 ? root.urgent : root.barForeground)
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.icon
         }
       }
     }
