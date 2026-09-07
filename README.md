@@ -56,6 +56,12 @@ and plain sockets. No root, no `nmap`.
   MongoDB, Elasticsearch), risky management ports (Docker API, RDP, SMB), UPnP
   and a broad open-port surface. Awareness only — it describes exposure, never
   how to exploit it, and the findings are fed to the AI investigation too.
+- **Wi-Fi context** — a WI-FI panel in the sidebar shows the current SSID,
+  signal (percent and dBm), band and channel, link rate and security, from
+  `nmcli` and `iw`.
+- **IPv6** — sweeps also read the IPv6 neighbour table (pinging the all-nodes
+  multicast group), attach global v6 addresses to hosts by MAC, and add any
+  v6-only neighbours; hosts with IPv6 are tagged `+v6`.
 - **Monitoring** — NetScope remembers every device by MAC in a persistent
   inventory. Name a device and mark it trusted from the probe row; untrusted
   present devices show an `UNKN` mark and a count badge (`⚠ N`) by the HOSTS
@@ -67,7 +73,7 @@ and plain sockets. No root, no `nmap`.
 
 - `python3`, `python-gobject`, `gtk4`, `libadwaita` (`omarchy pkg add python-gobject gtk4 libadwaita`)
 - `iproute2`, `iputils` (ping), `curl` — present on stock Omarchy
-- `avahi` for mDNS names (optional)
+- `avahi` for mDNS names, `networkmanager`/`iw` for the Wi-Fi panel (optional)
 - for AI SCAN: a cloud AI CLI (`claude`, `gemini` or `codex`) **or** a local
   [Ollama](https://ollama.com) (`ollama serve` on `localhost:11434`) — optional
 
@@ -111,6 +117,7 @@ netscope --scan [CIDR]      sweep (records changes, notifies on new devices)
 netscope --probe IP --ports quick|common|full|22,80,8000-8100
 netscope --assess IP        probe, then grade the security posture
 netscope --identify IP      active discovery (UPnP/NetBIOS/SNMP) + device-type guess
+netscope --wifi             current Wi-Fi link (SSID, signal, band, rate)
 netscope --watch [--interval N]   sweep on a loop and notify on changes
 netscope --inventory        list remembered devices (P present, T trusted, R randomized MAC)
 netscope --events [--limit N]     recent change events

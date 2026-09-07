@@ -10,6 +10,7 @@ import asyncio
 import ipaddress
 import json
 import os
+import re
 import socket
 import subprocess
 import threading
@@ -22,7 +23,7 @@ from typing import Callable, Iterable, Optional
 APP_NAME = "NetScope"
 APP_ID = "io.github.frigstah.netscope"
 TAGLINE = "developed for and by frig"
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 
 CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "netscope"
 LAST_SCAN_FILE = CACHE_DIR / "last-scan.json"
@@ -294,6 +295,137 @@ def vendor_for_mac(mac: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Wi-Fi context
+# --------------------------------------------------------------------------- #
+
+def _wifi_iface() -> str:
+    for i in interfaces():
+        if i.kind == "wifi" and i.up:
+            return i.name
+    return ""
+
+
+def _band_for_freq(mhz: float) -> str:
+    if mhz <= 0:
+        return ""
+    if mhz < 2500:
+        return "2.4 GHz"
+    if mhz < 5925:
+        return "5 GHz"
+    return "6 GHz"
+
+
+def wifi_status(iface: str = "") -> Optional[dict]:
+    """Current Wi-Fi link: SSID, signal, band/channel, rate, security. None if
+    not on Wi-Fi. Unprivileged (nmcli + iw)."""
+    iface = iface or _wifi_iface()
+    if not iface:
+        return None
+    info = {"iface": iface, "ssid": "", "signal_pct": -1, "signal_dbm": 0,
+            "band": "", "channel": "", "rate": "", "security": "", "bssid": ""}
+    # nmcli: the active AP row
+    # no BSSID here: its escaped colons make -t output ambiguous to split
+    out = _run(["nmcli", "-t", "-f", "ACTIVE,SSID,SIGNAL,CHAN,RATE,SECURITY",
+                "dev", "wifi"], timeout=3)
+    for line in out.splitlines():
+        parts = line.split(":", 5)
+        if len(parts) == 6 and parts[0] == "yes":
+            info["ssid"] = parts[1]
+            try:
+                info["signal_pct"] = int(parts[2])
+            except ValueError:
+                pass
+            info["channel"] = parts[3]
+            info["rate"] = parts[4]
+            info["security"] = parts[5] or "open"
+            break
+    # iw: dBm, freq -> band, tx bitrate
+    link = _run(["iw", "dev", iface, "link"], timeout=3)
+    m = re.search(r"Connected to ([0-9a-fA-F:]{17})", link)
+    if m:
+        info["bssid"] = m.group(1)
+    m = re.search(r"signal:\s*(-?\d+)\s*dBm", link)
+    if m:
+        info["signal_dbm"] = int(m.group(1))
+    m = re.search(r"freq:\s*([\d.]+)", link)
+    if m:
+        info["band"] = _band_for_freq(float(m.group(1)))
+    m = re.search(r"tx bitrate:\s*([\d.]+)\s*([MG]Bit/s)", link)
+    if m and not info["rate"]:
+        info["rate"] = f"{m.group(1)} {m.group(2)}"
+    if not info["ssid"]:
+        m = re.search(r"SSID:\s*(.+)", link)
+        if m:
+            info["ssid"] = m.group(1).strip()
+    return info if info["ssid"] else None
+
+
+# --------------------------------------------------------------------------- #
+# IPv6 discovery
+# --------------------------------------------------------------------------- #
+
+def neighbours6(dev: str = "") -> dict[str, dict]:
+    """IPv6 neighbour table (ip -6 neigh), keyed by address."""
+    out = {}
+    for n in _json(["ip", "-6", "-j", "neigh"]):
+        if dev and n.get("dev") != dev:
+            continue
+        states = [str(x).upper() for x in n.get("state", [])]
+        if any(s in ("FAILED", "INCOMPLETE") for s in states):
+            continue
+        ip6 = n.get("dst", "")
+        if not ip6 or ":" not in ip6:
+            continue
+        out[ip6] = {"mac": n.get("lladdr", ""), "state": ",".join(states),
+                    "dev": n.get("dev", ""), "linklocal": ip6.lower().startswith("fe80")}
+    return out
+
+
+def discover6(iface: str = "") -> dict[str, dict]:
+    """Ping the all-nodes multicast group to populate the v6 neighbour cache,
+    then read it back. Unprivileged."""
+    iface = iface or _wifi_iface()
+    if iface:
+        try:
+            subprocess.run(["ping", "-6", "-c", "2", "-W", "1", f"ff02::1%{iface}"],
+                           capture_output=True, timeout=4, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    return neighbours6(iface)
+
+
+def _attach_ipv6(hosts: list, iface: str) -> int:
+    """Attach IPv6 addresses to swept hosts by MAC; append v6-only hosts.
+    Returns the number of hosts that have IPv6."""
+    n6 = discover6(iface)
+    by_mac: dict[str, list] = {}
+    for ip6, info in n6.items():
+        mac = (info.get("mac") or "").lower()
+        if mac:
+            by_mac.setdefault(mac, []).append(ip6)
+    seen_macs = set()
+    for h in hosts:
+        mac = (h.mac or "").lower()
+        if mac and mac in by_mac:
+            seen_macs.add(mac)
+            # only globally-routable v6 is a meaningful indicator; every NIC has
+            # a link-local, so that alone is not worth flagging
+            h.ipv6 = sorted(a for a in by_mac[mac] if not a.lower().startswith("fe80"))
+    # v6-only neighbours (a MAC we saw over v6 but not in the v4 sweep)
+    for mac, addrs in by_mac.items():
+        if mac in seen_macs:
+            continue
+        globals_ = [a for a in addrs if not a.lower().startswith("fe80")]
+        if not globals_:
+            continue  # link-local only: skip, too noisy
+        h = Host(ip=globals_[0], mac=mac, iface=iface, seen_by=["ndp"],
+                 ipv6=sorted(addrs), v6only=True)
+        h.vendor = vendor_for_mac(mac)
+        hosts.append(h)
+    return sum(1 for h in hosts if h.ipv6)
+
+
+# --------------------------------------------------------------------------- #
 # LAN sweep
 # --------------------------------------------------------------------------- #
 
@@ -309,6 +441,8 @@ class Host:
     is_self: bool = False
     is_gateway: bool = False
     iface: str = ""
+    ipv6: list = field(default_factory=list)
+    v6only: bool = False
 
     @property
     def label(self) -> str:
@@ -467,6 +601,11 @@ def sweep(
                 if val:
                     setattr(h, attr, val)
 
+    if not (stop and stop.is_set()):
+        try:
+            _attach_ipv6(list(found.values()), iface)
+        except Exception:
+            pass
     hosts = sorted(found.values(), key=lambda h: h.sort_key)
     result = ScanResult(
         network=str(net), iface=iface, started_at=started,
@@ -674,6 +813,7 @@ def status(refresh_public: bool = False) -> dict:
     return {
         "app": APP_NAME, "version": VERSION, "tagline": TAGLINE,
         "interfaces": ifs,
+        "wifi": wifi_status(),
         "public": asdict(pub),
         "lastScan": {
             "network": scan.get("network", ""),

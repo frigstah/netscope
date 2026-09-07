@@ -2,6 +2,16 @@
 
 Notable changes, newest first.
 
+## [1.5.0] — 2026-09-08
+
+IPv6 and Wi-Fi context.
+
+### Added
+- Wi-Fi panel in the sidebar (SSID, signal %/dBm, band, channel, rate,
+  security) from nmcli + iw; `netscope --wifi` and a `wifi` field in `--status`.
+- IPv6: sweeps read the v6 neighbour table (ping ff02::1), attach global v6
+  addresses to hosts by MAC, add v6-only neighbours, and tag hosts `+v6`.
+
 ## [1.4.0] — 2026-09-08
 
 Device identification.

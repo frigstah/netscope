@@ -50,7 +50,7 @@ class HostRow(GObject.Object):
         r.vendor = h.vendor
         r.name = h.hostname or h.mdns or ""
         r.rtt = h.rtt_ms
-        r.seen = "+".join(h.seen_by)
+        r.seen = "+".join(h.seen_by) + ("+v6" if h.ipv6 else "")
         r.flag = "SELF" if h.is_self else ("GW" if h.is_gateway else ("" if "icmp" in h.seen_by else "ARP"))
         r.key = store.device_key(h.mac, h.ip)
         try:
@@ -267,6 +267,7 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         self.log(f"theme {theme.theme_name()} // font {theme.font_family()}")
         self.refresh_interfaces()
         self.refresh_public()
+        self.refresh_wifi()
         self._update_inventory_badge()
         GLib.timeout_add(400, self._autoscan)
 
@@ -355,6 +356,23 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         iface_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         iface_scroll.set_child(self.iface_box)
         side.append(iface_scroll)
+
+        self.wifi_sec = Gtk.Label(label="WI-FI", xalign=0)
+        self.wifi_sec.add_css_class("ns-section")
+        self.wifi_sec.set_visible(False)
+        side.append(self.wifi_sec)
+        self.wifi_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        self.wifi_card.add_css_class("ns-card")
+        self.wifi_card.add_css_class("primary")
+        self.wifi_card.set_margin_bottom(6)
+        self.wifi_card.set_visible(False)
+        self.wifi_ssid = _label("ns-card-title")
+        self.wifi_bar = _label("ns-ip")
+        self.wifi_meta = _label("ns-dim ns-mono-small")
+        self.wifi_rate = _label("ns-dimmer ns-mono-small")
+        for w in (self.wifi_ssid, self.wifi_bar, self.wifi_meta, self.wifi_rate):
+            self.wifi_card.append(w)
+        side.append(self.wifi_card)
 
         pub_head = Gtk.Box()
         sec2 = Gtk.Label(label="PUBLIC", xalign=0)
@@ -649,7 +667,33 @@ class NetScopeWindow(Gtk.ApplicationWindow):
     def _refresh_interfaces_tick(self) -> bool:
         if not (self._scanning or self._probing):
             self.refresh_interfaces(quiet=True)
+            self.refresh_wifi()
         return True
+
+    def refresh_wifi(self) -> None:
+        def work():
+            info = core.wifi_status()
+            GLib.idle_add(self._apply_wifi, info)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _apply_wifi(self, info) -> bool:
+        show = bool(info)
+        self.wifi_sec.set_visible(show)
+        self.wifi_card.set_visible(show)
+        if not show:
+            return False
+        sec = info.get("security") or "open"
+        self.wifi_ssid.set_text(f"󰖩  {info.get('ssid','?')}")
+        pct = info.get("signal_pct", -1)
+        dbm = info.get("signal_dbm", 0)
+        blocks = 0 if pct < 0 else max(1, round(pct / 20))
+        bar = "▊" * blocks + "·" * (5 - blocks)
+        self.wifi_bar.set_text(f"{bar}  {pct if pct>=0 else '?'}%" + (f"  {dbm} dBm" if dbm else ""))
+        band = info.get("band", "")
+        chan = info.get("channel", "")
+        self.wifi_meta.set_text("  ·  ".join(x for x in (band, f"ch {chan}" if chan else "", sec) if x))
+        self.wifi_rate.set_text(info.get("rate", ""))
+        return False
 
     def refresh_interfaces(self, quiet: bool = False) -> None:
         ifaces = core.interfaces()

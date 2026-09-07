@@ -179,6 +179,22 @@ def cmd_probe(ip: str, ports: str, as_json: bool) -> int:
     return 0
 
 
+def cmd_wifi(as_json: bool) -> int:
+    w = core.wifi_status()
+    if as_json:
+        print(json.dumps(w))
+        return 0
+    if not w:
+        print("not connected to Wi-Fi", file=sys.stderr)
+        return 1
+    print(f"  SSID     {w['ssid']}  ({w.get('security','')})")
+    print(f"  signal   {w.get('signal_pct',-1)}%  {w.get('signal_dbm',0)} dBm")
+    print(f"  link     {w.get('band','')}  ch {w.get('channel','')}  {w.get('rate','')}")
+    if w.get("bssid"):
+        print(f"  bssid    {w['bssid']}")
+    return 0
+
+
 def cmd_identify(ip: str, as_json: bool) -> int:
     disc = discover.enrich(ip)
     # a light dossier for the type guess (no full probe; use ARP/known ports)
@@ -234,6 +250,7 @@ def main(argv=None) -> int:
     ap.add_argument("--probe", metavar="IP")
     ap.add_argument("--assess", metavar="IP", help="probe then report the security posture")
     ap.add_argument("--identify", metavar="IP", help="active discovery (UPnP/NetBIOS/SNMP) + device-type guess")
+    ap.add_argument("--wifi", action="store_true", help="current Wi-Fi link details")
     ap.add_argument("--watch", nargs="?", const="", metavar="CIDR",
                     help="sweep on an interval and notify on changes")
     ap.add_argument("--interval", type=int, default=120, help="watch interval seconds")
@@ -259,6 +276,8 @@ def main(argv=None) -> int:
         return cmd_events(args.json, args.limit)
     if args.scan is not None:
         return cmd_scan(args.scan, args.json)
+    if args.wifi:
+        return cmd_wifi(args.json)
     if args.identify:
         return cmd_identify(args.identify, args.json)
     if args.assess:
