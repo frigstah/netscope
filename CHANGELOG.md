@@ -2,6 +2,18 @@
 
 Notable changes, newest first.
 
+## [1.6.0] — 2026-09-08
+
+Reports, actions, and a terminal UI.
+
+### Added
+- `report.py`: export the inventory as JSON, CSV, Markdown, or a self-contained
+  HTML page. GUI `ctrl+E`, CLI `netscope --report FMT [--out FILE] [--sanitized]`.
+- `actions.py`: per-device `⋯` menu in the window — open web UI, SSH, Wake-on-LAN
+  (`core.wake_on_lan`, `netscope --wake MAC`), ping, copy IP.
+- `tui.py`: a dependency-free curses terminal UI (`netscope --tui`) with
+  interfaces, Wi-Fi, public IP, a live host list, sweep, probe and watch.
+
 ## [1.5.0] — 2026-09-08
 
 IPv6 and Wi-Fi context.

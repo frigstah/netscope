@@ -6,6 +6,7 @@ import ipaddress
 import threading
 import time
 from dataclasses import asdict
+from pathlib import Path
 
 import gi
 
@@ -14,7 +15,7 @@ gi.require_version("Gdk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk  # noqa: E402
 
-from . import ai, assess, core, notify, recon, store, theme  # noqa: E402
+from . import actions, ai, assess, core, notify, recon, report, store, theme  # noqa: E402
 
 KIND_GLYPH = {
     "wifi": "󰖩", "ethernet": "󰈀", "vpn": "󰖂", "virtual": "󰡨",
@@ -514,6 +515,12 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         self.trust_btn.set_tooltip_text("Mark this device as trusted/known")
         self.trust_btn.connect("toggled", lambda *_: self._save_identity())
         top.append(self.trust_btn)
+        self.actions_btn = Gtk.MenuButton(label="⋯")
+        self.actions_btn.add_css_class("ns-ghost")
+        self.actions_btn.set_sensitive(False)
+        self.actions_btn.set_tooltip_text("Actions for this device")
+        self.actions_btn.set_popover(self._build_actions_popover())
+        top.append(self.actions_btn)
         wrap.append(top)
         bar = Gtk.Box(spacing=10)
         wrap.append(bar)
@@ -648,6 +655,9 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         if ctrl and keyval in (Gdk.KEY_r, Gdk.KEY_R):
             self.refresh_public(force=True)
             self.refresh_interfaces()
+            return True
+        if ctrl and keyval in (Gdk.KEY_e, Gdk.KEY_E):
+            self._export_report()
             return True
         return False
 
@@ -998,6 +1008,7 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         self.name_entry.set_text(d.name if d else "")
         self.trust_btn.set_sensitive(True)
         self.trust_btn.set_active(d.trusted if d else (item.flag == "SELF"))
+        self.actions_btn.set_sensitive(True)
         self._loading_identity = False
         self.ai_btn.set_sensitive(bool(self._ai_backend))
         if not self._ai_backend:
@@ -1007,6 +1018,73 @@ class NetScopeWindow(Gtk.ApplicationWindow):
             self.port_count.set_text("")
             self.probe_progress.set_fraction(0)
             self.sec_strip.set_visible(False)
+
+    def _build_actions_popover(self) -> Gtk.Popover:
+        pop = Gtk.Popover()
+        pop.add_css_class("ns-findings-pop")
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        box.set_margin_top(8); box.set_margin_bottom(8)
+        box.set_margin_start(8); box.set_margin_end(8)
+        box.set_size_request(180, -1)
+        for label, handler in (
+            ("󰖟  Open web UI", self._act_web),
+            ("󰣀  SSH", self._act_ssh),
+            ("󰤄  Wake-on-LAN", self._act_wake),
+            ("󰐷  Ping", self._act_ping),
+            ("󰆏  Copy IP", lambda: self.copy_target()),
+        ):
+            b = Gtk.Button(label=label)
+            b.add_css_class("ns-ghost")
+            b.set_halign(Gtk.Align.FILL)
+            b.get_child().set_xalign(0)
+            b.connect("clicked", lambda _w, h=handler: (self.actions_btn.popdown(), h()))
+            box.append(b)
+        pop.set_child(box)
+        return pop
+
+    def _sel_host(self):
+        return self.host_sel.get_selected_item()
+
+    def _act_web(self) -> None:
+        h = self._sel_host()
+        if not h:
+            return
+        ports = self._probe_cache.get(h.ip)
+        pdict = {x.port: x.service for x in ports} if ports else None
+        url = actions.web_url(h.ip, pdict)
+        actions.open_url(url)
+        self.log(f"opening {url}")
+
+    def _act_ssh(self) -> None:
+        h = self._sel_host()
+        if h:
+            self.log(f"ssh {h.ip}" if actions.ssh(h.ip) else "no terminal found for ssh")
+
+    def _act_ping(self) -> None:
+        h = self._sel_host()
+        if h:
+            self.log(f"ping {h.ip}" if actions.ping(h.ip) else "no terminal found for ping")
+
+    def _act_wake(self) -> None:
+        h = self._sel_host()
+        if not h:
+            return
+        if not h.mac:
+            self.log("no MAC to wake")
+            return
+        ok = actions.wake(h.mac)
+        self.log(f"wake-on-lan {'sent to' if ok else 'failed for'} {h.mac}")
+
+    def _export_report(self) -> None:
+        import time as _t
+        path = str(Path.home() / f"netscope-report-{_t.strftime('%Y%m%d-%H%M%S')}.html")
+        try:
+            with open(path, "w") as f:
+                f.write(report.build("html"))
+            self.log(f"report written: {path}")
+            actions.open_url(path)
+        except OSError as e:
+            self.log(f"report failed: {e}")
 
     def _save_identity(self) -> None:
         if getattr(self, "_loading_identity", False):

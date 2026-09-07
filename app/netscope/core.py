@@ -23,7 +23,7 @@ from typing import Callable, Iterable, Optional
 APP_NAME = "NetScope"
 APP_ID = "io.github.frigstah.netscope"
 TAGLINE = "developed for and by frig"
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 
 CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "netscope"
 LAST_SCAN_FILE = CACHE_DIR / "last-scan.json"
@@ -292,6 +292,28 @@ def vendor_for_mac(mac: str) -> str:
         except ValueError:
             pass
     return v
+
+
+def wake_on_lan(mac: str, broadcast: str = "255.255.255.255") -> bool:
+    """Send a Wake-on-LAN magic packet to a MAC. Unprivileged UDP broadcast."""
+    hexmac = mac.replace(":", "").replace("-", "").strip()
+    if len(hexmac) != 12:
+        return False
+    try:
+        payload = b"\xff" * 6 + bytes.fromhex(hexmac) * 16
+    except ValueError:
+        return False
+    ok = False
+    for port in (9, 7):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            s.sendto(payload, (broadcast, port))
+            s.close()
+            ok = True
+        except OSError:
+            pass
+    return ok
 
 
 # --------------------------------------------------------------------------- #

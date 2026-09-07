@@ -14,7 +14,7 @@ import sys
 import time
 from dataclasses import asdict
 
-from . import core, store, notify, assess, discover, recon
+from . import core, store, notify, assess, discover, recon, report
 
 
 def _default_network() -> tuple[str, str]:
@@ -179,6 +179,31 @@ def cmd_probe(ip: str, ports: str, as_json: bool) -> int:
     return 0
 
 
+def cmd_report(fmt: str, out: str, sanitized: bool) -> int:
+    try:
+        text = report.build(fmt, sanitized=sanitized)
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    if out:
+        try:
+            with open(out, "w") as f:
+                f.write(text)
+        except OSError as e:
+            print(f"could not write {out}: {e}", file=sys.stderr)
+            return 1
+        print(f"wrote {out}", file=sys.stderr)
+    else:
+        print(text)
+    return 0
+
+
+def cmd_wake(mac: str) -> int:
+    ok = core.wake_on_lan(mac)
+    print(f"wake-on-lan {'sent to' if ok else 'failed for'} {mac}", file=sys.stderr)
+    return 0 if ok else 1
+
+
 def cmd_wifi(as_json: bool) -> int:
     w = core.wifi_status()
     if as_json:
@@ -251,6 +276,11 @@ def main(argv=None) -> int:
     ap.add_argument("--assess", metavar="IP", help="probe then report the security posture")
     ap.add_argument("--identify", metavar="IP", help="active discovery (UPnP/NetBIOS/SNMP) + device-type guess")
     ap.add_argument("--wifi", action="store_true", help="current Wi-Fi link details")
+    ap.add_argument("--report", metavar="FMT", help="export a report: json|csv|md|html")
+    ap.add_argument("--out", metavar="FILE", help="write the report to a file")
+    ap.add_argument("--sanitized", action="store_true", help="mask public IP/location in the report")
+    ap.add_argument("--wake", metavar="MAC", help="send a Wake-on-LAN magic packet")
+    ap.add_argument("--tui", action="store_true", help="terminal UI")
     ap.add_argument("--watch", nargs="?", const="", metavar="CIDR",
                     help="sweep on an interval and notify on changes")
     ap.add_argument("--interval", type=int, default=120, help="watch interval seconds")
@@ -276,6 +306,10 @@ def main(argv=None) -> int:
         return cmd_events(args.json, args.limit)
     if args.scan is not None:
         return cmd_scan(args.scan, args.json)
+    if args.report:
+        return cmd_report(args.report, args.out or "", args.sanitized)
+    if args.wake:
+        return cmd_wake(args.wake)
     if args.wifi:
         return cmd_wifi(args.json)
     if args.identify:
@@ -285,6 +319,9 @@ def main(argv=None) -> int:
     if args.probe:
         return cmd_probe(args.probe, args.ports, args.json)
 
+    if args.tui:
+        from . import tui
+        return tui.main()
     from . import gui
     return gui.main()
 

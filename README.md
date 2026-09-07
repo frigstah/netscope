@@ -62,6 +62,14 @@ and plain sockets. No root, no `nmap`.
 - **IPv6** — sweeps also read the IPv6 neighbour table (pinging the all-nodes
   multicast group), attach global v6 addresses to hosts by MAC, and add any
   v6-only neighbours; hosts with IPv6 are tagged `+v6`.
+- **Actions** — a `⋯` menu on the selected device: open its web UI (picks the
+  right http/https port), SSH, send a Wake-on-LAN magic packet, ping in a
+  terminal, or copy the IP.
+- **Reports** — export the inventory as JSON, CSV, Markdown, or a self-contained
+  HTML page (`ctrl+E` in the window, or `netscope --report`); `--sanitized`
+  masks the public IP and location for sharing.
+- **Terminal mode** — `netscope --tui`, a dependency-free curses UI with the
+  same interfaces, Wi-Fi, public IP, live host list, sweep and probe.
 - **Monitoring** — NetScope remembers every device by MAC in a persistent
   inventory. Name a device and mark it trusted from the probe row; untrusted
   present devices show an `UNKN` mark and a count badge (`⚠ N`) by the HOSTS
@@ -118,6 +126,9 @@ netscope --probe IP --ports quick|common|full|22,80,8000-8100
 netscope --assess IP        probe, then grade the security posture
 netscope --identify IP      active discovery (UPnP/NetBIOS/SNMP) + device-type guess
 netscope --wifi             current Wi-Fi link (SSID, signal, band, rate)
+netscope --report FMT       export json|csv|md|html  (--out FILE, --sanitized)
+netscope --wake MAC         send a Wake-on-LAN magic packet
+netscope --tui              terminal UI
 netscope --watch [--interval N]   sweep on a loop and notify on changes
 netscope --inventory        list remembered devices (P present, T trusted, R randomized MAC)
 netscope --events [--limit N]     recent change events
@@ -166,7 +177,10 @@ io.github.frigstah.netscope/
     ├── assess.py      security-posture rules + risk score
     ├── discover.py    active discovery (SSDP/UPnP, NetBIOS, SNMP)
     ├── recon.py       device fingerprint
-    ├── ai.py          AI investigation (claude / gemini / codex)
+    ├── ai.py          AI investigation (claude / gemini / codex / ollama)
+    ├── actions.py     per-device actions (web/ssh/wol/ping)
+    ├── report.py      json/csv/markdown/html reports
+    ├── tui.py         curses terminal UI
     ├── theme.py       Omarchy colours + font -> GTK CSS
     ├── gui.py         GTK4 window
     └── cli.py         command line, headless watcher
