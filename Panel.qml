@@ -20,7 +20,7 @@ Panel {
   // Bar glyph: a few compact, network-flavoured options. OpticalGlyph centres
   // them so they sit at the same height as the neighbouring bar icons.
   readonly property var glyphMap: ({
-    "access-point": "󰀃", "radar": "󰕰", "wifi": "󰤨", "lan": "󰛳", "crosshairs": "󰆤"
+    "access-point": "󰀃", "radar": "󰆤", "wifi": "󰤨", "lan": "󰛳", "crosshairs": ""
   })
   readonly property string barGlyphName: setting("barGlyph", "access-point")
   readonly property string barGlyph: glyphMap[barGlyphName] || glyphMap["access-point"]
