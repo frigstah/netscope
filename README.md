@@ -101,6 +101,9 @@ and plain sockets. No root, no `nmap`.
   each only matters for the action that uses it (optional)
 - for AI SCAN: a cloud AI CLI (`claude`, `gemini` or `codex`) **or** a local
   [Ollama](https://ollama.com) (`ollama serve` on `localhost:11434`) - optional
+- `bubblewrap` (`bwrap`) if you use a cloud AI CLI: NetScope only ever runs one
+  inside it, and without it the cloud engines are not offered. Ollama needs no
+  sandbox - see [How a cloud engine is contained](#how-a-cloud-engine-is-contained)
 
 ## Install
 
@@ -213,10 +216,34 @@ AI SCAN. Reports written with `--sanitized` mask the public address, Wi-Fi
 identity, hostnames, MAC suffixes and any globally-routable device address;
 private LAN addresses are kept.
 
-A cloud AI CLI is invoked as a plain text generator with its tools disabled and
-a throwaway working directory, so an investigation cannot act on your machine
-even if a device on the network puts instructions in its banner. Evidence
-collected from the network is delimited and marked untrusted in the prompt.
+### How a cloud engine is contained
+
+The prompt an engine reads quotes text that devices on your LAN chose to send -
+a hostname, an HTTP title, a service banner. Treat that as hostile input: it is
+the one place an attacker gets to write into the prompt. Evidence is delimited
+and marked untrusted, but the containment does not rely on the model ignoring
+it. A cloud CLI is an agent runner, not a text API, so two things are done to it.
+
+**Its tools are switched off.** `claude` runs with `--tools ""` (no built-in
+tools at all), plus `--restricted` and `--strict-mcp-config` so it also ignores
+your settings files and any configured MCP server. `codex` runs with
+`--ignore-user-config`, a read-only sandbox and web search disabled. `gemini`
+has no "no tools" switch, so NetScope writes a settings file into the sandbox
+that empties its tool list and disables extensions and MCP servers.
+
+**It is run inside a bubblewrap sandbox.** Empty throwaway HOME, wiped
+environment, read-only view of `/usr` and a handful of `/etc` files, and no
+sight of your home directory: not `~/.ssh`, not `~/.config`, not this plugin.
+The only secret inside is the credential for the very service being called,
+bound read-only as a single file, because without it the CLI cannot log in.
+The working directory is the same throwaway directory and is deleted after the
+run. **Without `bubblewrap` installed, cloud engines are not offered at all** -
+a local Ollama model still works, since it is an HTTP request with no tool loop
+and no subprocess.
+
+Network access stays open inside the sandbox, because reaching the model is the
+point of the call; every tool that could fetch or search on its own is off.
+
 SNMP queries use the read-only `public` community and never write.
 
 Port access help is scoped to reaching a service on a device you own: the login

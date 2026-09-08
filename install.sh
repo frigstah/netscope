@@ -34,6 +34,10 @@ command -v avahi-resolve >/dev/null || echo "note: avahi not found - mDNS names 
 command -v claude >/dev/null || command -v gemini >/dev/null || command -v codex >/dev/null \
   || curl -sf -m 2 -o /dev/null "${NETSCOPE_OLLAMA_HOST:-http://localhost:11434}/api/tags" \
   || echo "note: no AI engine found - AI SCAN needs claude, gemini or codex, or a local 'ollama serve' (optional)"
+if command -v claude >/dev/null || command -v gemini >/dev/null || command -v codex >/dev/null; then
+  command -v bwrap >/dev/null \
+    || echo "note: bubblewrap not found - a cloud AI CLI is only ever run inside it, so cloud engines will not be offered (pacman -S bubblewrap). A local Ollama model needs no sandbox."
+fi
 
 # --- link the CLI ---------------------------------------------------------- #
 mkdir -p "$HOME/.local/bin"
