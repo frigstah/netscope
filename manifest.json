@@ -5,7 +5,7 @@
   "version": "1.6.3",
   "author": "frig",
   "license": "MIT",
-  "description": "LAN reconnaissance for Omarchy: local IPs per interface, public IP, every unit on the network and a port probe for any of them. Developed for and by frig.",
+  "description": "LAN reconnaissance for Omarchy: local IPs per interface, public IP, Wi-Fi and IPv6 context, and every device on the network with its vendor and guessed type. Probe any host's TCP ports, get a security-posture score, and run an AI investigation of a device or the whole network. Continuous monitoring names devices and alerts on new arrivals; export reports and drive it from a bar widget, a window, or a terminal UI. Developed for and by frig.",
   "kinds": [
     "bar-widget"
   ],
@@ -14,7 +14,7 @@
   },
   "barWidget": {
     "displayName": "NetScope",
-    "description": "Interfaces, public IP and last LAN sweep at a glance; opens the NetScope window.",
+    "description": "Interfaces, public IP, Wi-Fi and the last LAN sweep at a glance, with an unknown-device count; opens the NetScope window or runs a sweep.",
     "category": "Network",
     "allowMultiple": false,
     "defaultSection": "right",
