@@ -2,6 +2,38 @@
 
 Notable changes, newest first.
 
+## [1.10.0] - 2026-09-09
+
+### Added
+- **Port access help.** Double-click an open port in the probe results (or press
+  Enter on it) and the AI answers how to get into that one service on that
+  device: the likely login URL or a ready `ssh` command, the client or tool to
+  open it with, and the factory-default credentials the vendor documents, each
+  with a confidence word. Scoped to first-party access to your own equipment -
+  the brief rules out brute forcing, password spraying, credential stuffing,
+  default-credential scanning of other people's systems, and exploiting a
+  vulnerability to get in - and it always tells you to change credentials still
+  on their defaults. The port evidence is sanitized and marked untrusted in the
+  prompt like every other network-sourced string, and the engine still runs with
+  its tools disabled, so nothing is ever sent or attempted on your behalf.
+
+### Fixed
+- The bar's **Open** action ran `omarchy-launch-or-focus netscope`, which matches
+  any window whose class or title merely contains the word "netscope" - a
+  terminal sitting in the project directory would be focused instead of the app
+  starting. It now matches the full `io.github.frigstah.netscope` window class.
+- The port table deliberately keeps its rows while a probe is running, so
+  selecting another host mid-probe left the previous host's ports on screen.
+  Asking for access help on one of those rows paired the old host's port number
+  with the newly selected host's address and evidence. The table now remembers
+  which host its rows came from and answers for that host.
+- The "double-click a port" hint stayed on screen after the port table was
+  cleared.
+
+### Changed
+- The port table had both a tooltip and a permanent hint saying the same thing;
+  only the hint remains.
+
 ## [1.9.0] - 2026-09-08
 
 Marketplace-readiness pass against the Omarchy plugin development guide.

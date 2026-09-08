@@ -290,6 +290,7 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         self._host_index: dict[str, HostRow] = {}
         self._networks: list[tuple[str, str]] = []  # (network, iface)
         self._target_ip = ""
+        self._ports_ip = ""                       # the host the port table's rows belong to
         self._cursor_on = True
         self._pulse = True
         self._probe_cache: dict[str, list] = {}   # ip -> [core.PortHit] from the last probe
@@ -647,17 +648,16 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         view = Gtk.ColumnView.new(self.port_sel)
         self.port_view = view
         # double-click or Enter on a port asks the AI how to reach and log in to
-        # that service on this device (URL, client/command, factory defaults)
+        # that service on this device (URL, client/command, factory defaults).
+        # `pos` indexes port_store directly because the view's model is the
+        # selection over that store with nothing in between; wrapping it in a
+        # Gtk.SortListModel would break that mapping without any error.
         view.connect("activate", lambda _v, pos: self._investigate_port(pos))
         view.append_column(_text_column("PORT", "port", "ns-cell-ip", fixed=100))
         view.append_column(_text_column("SERVICE", "service", "", fixed=190))
         view.append_column(_text_column("LATENCY", "latency", "ns-dim",
                                         fmt=lambda v: f"{v:.1f} ms", fixed=110))
         view.append_column(_text_column("BANNER", "banner", "ns-dim", expand=True))
-        view.set_tooltip_text(
-            "Double-click a port for access help: the likely login URL, the "
-            "client or command to use, and the vendor's default credentials"
-        )
         scroll = Gtk.ScrolledWindow(vexpand=True)
         scroll.set_child(view)
         box.append(scroll)
@@ -1095,7 +1095,7 @@ class NetScopeWindow(Gtk.ApplicationWindow):
                 "No AI engine found (install claude, gemini or codex, or run ollama serve)"
             )
         if not self._probing:
-            self.port_store.remove_all()
+            self._clear_ports()
             self.port_count.set_text("")
             self.probe_progress.set_fraction(0)
             self.sec_strip.set_visible(False)
@@ -1244,7 +1244,8 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         grab = self.banner_check.get_active()
         self.probe_btn.set_label("STOP")
         self.probe_btn.add_css_class("ns-danger")
-        self.port_store.remove_all()
+        self._clear_ports()
+        self._ports_ip = ip
         self.probe_progress.set_fraction(0)
         self.port_count.set_text(f"0 open  ·  0/{len(ports)}")
         self.set_status(f"probing {ip} ({label}, {len(ports)} ports)", busy=True)
@@ -1265,6 +1266,13 @@ class NetScopeWindow(Gtk.ApplicationWindow):
                 GLib.idle_add(self._probe_failed, str(e))
 
         threading.Thread(target=work, daemon=True).start()
+
+    def _clear_ports(self) -> None:
+        """Empty the port table and forget which host its rows came from."""
+        self.port_store.remove_all()
+        self._ports_ip = ""
+        if getattr(self, "port_hint", None) is not None:
+            self.port_hint.set_visible(False)
 
     def _add_hit(self, h: core.PortHit) -> bool:
         row = PortRow.from_hit(h)
@@ -1390,19 +1398,22 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         if item is None:
             return
         port = int(item.port)
-        if not self._target_ip:
+        # the rows belong to whichever host was probed, which is not always the
+        # host selected right now: selecting another host mid-probe leaves the
+        # table on the old one, so ask about the host the port was really seen on
+        ip = self._ports_ip
+        if not ip:
             return
         if not self._ai_backend:
             self.log("no AI engine available (install claude/gemini/codex, or run ollama serve)")
             return
-        ip = self._target_ip
         host = self._core_host(ip)
         hits = self._probe_cache.get(ip)
         win = AiScanWindow(self, ip, host, hits, self._ai_backend, mode="port", port=port)
         self._ai_windows.append(win)
         win.present()
         win.start_if_ready()
-        self.log(f"ai access {ip}:{port}" + (f" via {win.backend}" if win.backend else " - choose an engine"))
+        self.log(f"ai access {ip}:{port} via {win.backend}")
 
     def start_ai_scan(self) -> None:
         if not self._target_ip:

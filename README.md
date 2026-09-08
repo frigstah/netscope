@@ -41,6 +41,13 @@ and plain sockets. No root, no `nmap`.
   port is being used for. Pick the engine per investigation: a cloud CLI
   (`claude`, `gemini`, `codex`) or a **local Ollama** model, so a private
   investigation never leaves your machine.
+- **Port access help** - double-click an open port in the probe results (or
+  press Enter on it) and the AI answers how to get into that one service on that
+  device: the likely login URL or a ready `ssh` command, the client or tool to
+  open it with, and the factory-default credentials the vendor documents, each
+  with a confidence word. It stays inside first-party access to your own
+  equipment and always reminds you to change credentials still on their
+  defaults.
 - **Whole-network AI summary** - click the `⚠ N` badge by the HOSTS title (or
   `ctrl+shift+I`) for one report that inventories the LAN, ranks the risks, and
   gives concrete recommendations, built from the stored inventory and per-device
@@ -136,6 +143,7 @@ party. Opening the popout is what refreshes the public address.
 - `F5` sweep · `Enter` or `ctrl+P` probe the selected host · `ctrl+I` AI scan
 - `Esc` stop · `ctrl+C` copy target IP · `ctrl+R` refresh · `ctrl+Q` quit
 - double-click a host to probe it
+- double-click an open port (or `Enter`) for access help: login URL, client, defaults
 - name a device and toggle **TRUST** in the probe row; **WATCH** monitors continuously
 - two draggable dividers set the proportions: interfaces vs hosts, and hosts vs probe
 
@@ -191,6 +199,8 @@ machine. Two things do reach the internet:
   uses that whenever its popout is closed.
 - **AI SCAN.** Sends the collected evidence about the selected device (or the
   inventory, for a whole-network summary) to whichever AI engine you pick.
+- **Port access help.** Sends that same device evidence with the one port you
+  double-clicked marked as the focus.
 
 The AI window never sends anything until an engine is chosen: with both a cloud
 CLI and a local Ollama available it waits for you, and remembers the choice.
@@ -204,6 +214,14 @@ a throwaway working directory, so an investigation cannot act on your machine
 even if a device on the network puts instructions in its banner. Evidence
 collected from the network is delimited and marked untrusted in the prompt.
 SNMP queries use the read-only `public` community and never write.
+
+Port access help is scoped to reaching a service on a device you own: the login
+address, the client to use, and the vendor's published factory defaults, which
+come from the product's own documentation. The brief rules out everything that
+would defeat authentication instead - no brute forcing, password spraying,
+credential stuffing, default-credential scanning of other people's systems, or
+exploiting a vulnerability to get in - and NetScope itself never sends a
+credential anywhere or attempts a login. It prints an answer; you do the rest.
 
 Override the local endpoint/model with `NETSCOPE_OLLAMA_HOST` and
 `NETSCOPE_OLLAMA_MODEL`. Set `NETSCOPE_NOTIFY=0` to mute desktop alerts.
