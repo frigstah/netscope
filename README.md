@@ -201,6 +201,10 @@ machine. Two things do reach the internet:
   inventory, for a whole-network summary) to whichever AI engine you pick.
 - **Port access help.** Sends that same device evidence with the one port you
   double-clicked marked as the focus.
+- **Model list.** To offer the models you actually use, NetScope reads model
+  names out of `~/.claude/settings.json`, `~/.gemini/settings.json` and
+  `~/.codex/config.toml`. Read-only, model names only - it never writes to them
+  and never opens a credential file. Nothing leaves your machine for this.
 
 The AI window never sends anything until an engine is chosen: with both a cloud
 CLI and a local Ollama available it waits for you, and remembers the choice.
@@ -223,18 +227,29 @@ credential stuffing, default-credential scanning of other people's systems, or
 exploiting a vulnerability to get in - and NetScope itself never sends a
 credential anywhere or attempts a login. It prints an answer; you do the rest.
 
-The engine picker in the AI window lists each cloud CLI and one entry per model
-pulled into the local Ollama, so you choose the model and not just the provider.
-The choice is remembered between investigations. When every engine on offer is a
-local model there is no privacy question to answer, so the window starts on the
-default one instead of stopping to ask; anything that would send evidence off
-this machine still waits for you.
+### Choosing the engine and model
 
-A cloud CLI otherwise runs on whatever model it is configured for. Pin one with
-`NETSCOPE_CLAUDE_MODEL`, `NETSCOPE_GEMINI_MODEL` or `NETSCOPE_CODEX_MODEL` and
-the picker shows it. `NETSCOPE_OLLAMA_MODEL` names the default local model and
-puts it at the top of the list, `NETSCOPE_OLLAMA_HOST` moves the endpoint, and
-`NETSCOPE_NOTIFY=0` mutes desktop alerts.
+The **⚙** in the window header picks the **provider** and the **model** before
+you scan anything, and remembers both. The model list is built from the models
+that provider's own CLI settings mention - the closest thing to "what this
+subscription has", since none of the CLIs can list models - plus any model you
+have typed in before and a short built-in fallback. Ollama is the one provider
+that can be asked outright, so its list is whatever you have pulled. Leaving the
+model on *default* keeps the CLI on whatever it is configured for.
+
+The list is never a limit: type any model name into the box and it is used as
+is and added to the list, so a model released after this build still works.
+
+The AI window has the same picker in its header, so you can switch provider or
+model for a single investigation. When every engine on offer is a local model
+there is no privacy question to answer and the window starts on the default one;
+anything that would send evidence off this machine still waits for you to
+choose.
+
+`NETSCOPE_CLAUDE_MODEL`, `NETSCOPE_GEMINI_MODEL` and `NETSCOPE_CODEX_MODEL` set
+a model without the UI, and `NETSCOPE_OLLAMA_MODEL` names the default local one;
+a model chosen in the cogwheel wins over them. `NETSCOPE_OLLAMA_HOST` moves the
+Ollama endpoint and `NETSCOPE_NOTIFY=0` mutes desktop alerts.
 
 ## Layout
 

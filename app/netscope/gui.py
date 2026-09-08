@@ -197,6 +197,18 @@ def _dropdown(items: list[str], width: int, cap: int = 16,
     return dd
 
 
+def _field_row(caption: str, widget: Gtk.Widget) -> Gtk.Box:
+    """A dim caption with its control, for the settings popover."""
+    row = Gtk.Box(spacing=8)
+    lbl = _label("ns-dim")
+    lbl.set_text(caption)
+    lbl.set_size_request(70, -1)
+    row.append(lbl)
+    widget.set_hexpand(True)
+    row.append(widget)
+    return row
+
+
 def _settle_engine(ids: list[str], saved: str) -> str | None:
     """Which engine an AI window may start on unprompted, or None to stop and
     let the user choose.
@@ -333,7 +345,14 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         self._probe_cache: dict[str, list] = {}   # ip -> [core.PortHit] from the last probe
         self._last_ports: list = []               # the port range of the last probe
         self._ai_windows: list = []
-        self._ai_backend = ai.available_backend()
+        provs = ai.providers()
+        saved_engine = store.get_pref("ai_engine") or ""
+        # a saved provider+model wins, as long as that provider is still here
+        self._ai_backend = (saved_engine if ai.split_engine(saved_engine)[0] in provs
+                            else (provs[0] if provs else None))
+        self._settings_loading = False
+        self._set_provs: list[str] = []
+        self._set_models: list[str] = []
         self._public: dict = {}
         self._devices: dict = {}
         self._new_ips: set = set()
@@ -392,6 +411,19 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         self.status_label.set_hexpand(True)
         self.status_label.set_max_width_chars(20)
         header.append(self.status_label)
+        self.settings_btn = Gtk.MenuButton(label="⚙")
+        self.settings_btn.add_css_class("ns-ghost")
+        self.settings_btn.set_tooltip_text("Choose the AI provider and model")
+        self.settings_pop = Gtk.Popover()
+        self.settings_pop.add_css_class("ns-findings-pop")
+        self.settings_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.settings_box.set_size_request(320, -1)
+        self.settings_pop.set_child(self.settings_box)
+        # filled on every open: engines come and go (ollama starts, a CLI is
+        # installed) and the model lists are read fresh from their configs
+        self.settings_pop.connect("map", lambda *_: self._fill_settings())
+        self.settings_btn.set_popover(self.settings_pop)
+        header.append(self.settings_btn)
         self.watch_btn = Gtk.ToggleButton(label="WATCH")
         self.watch_btn.add_css_class("ns-watch")
         self.watch_btn.set_tooltip_text(
@@ -1137,6 +1169,117 @@ class NetScopeWindow(Gtk.ApplicationWindow):
             self.probe_progress.set_fraction(0)
             self.sec_strip.set_visible(False)
 
+    # ---- AI engine settings ------------------------------------------------ #
+
+    def _remembered_models(self) -> dict:
+        """Models typed into settings, per provider, so they keep being offered."""
+        got = store.get_pref("ai_models") or {}
+        return got if isinstance(got, dict) else {}
+
+    def _remember_model(self, provider: str, model: str) -> None:
+        got = self._remembered_models()
+        kept = [m for m in got.get(provider, []) if m != model]
+        got[provider] = [model] + kept[:9]        # newest first, a short history
+        store.set_pref("ai_models", got)
+
+    def _fill_settings(self) -> None:
+        """(Re)build the cogwheel: provider, model, and a box for a model name
+        this build has never heard of."""
+        box = self.settings_box
+        while (child := box.get_first_child()) is not None:
+            box.remove(child)
+        title = _label("ns-dim")
+        title.set_text("AI ENGINE")
+        box.append(title)
+
+        provs = ai.providers()
+        if not provs:
+            miss = _label("ns-dim")
+            miss.set_text("No AI engine found.\nInstall claude, gemini or codex,\nor run ollama serve.")
+            box.append(miss)
+            return
+
+        engine = store.get_pref("ai_engine") or self._ai_backend or provs[0]
+        cur_prov, cur_model = ai.split_engine(engine)
+        if cur_prov not in provs:
+            cur_prov, cur_model = provs[0], ""
+
+        self._set_provs = provs
+        self.set_prov_dd = _dropdown(provs, 150, cap=18, list_cap=30)
+        self.set_prov_dd.set_selected(provs.index(cur_prov))
+        box.append(_field_row("PROVIDER", self.set_prov_dd))
+
+        self.set_model_dd = _dropdown([""], 150, cap=20, list_cap=44)
+        box.append(_field_row("MODEL", self.set_model_dd))
+
+        self.set_effective = _label("ns-dim")
+        box.append(self.set_effective)
+
+        entry = Gtk.Entry()
+        entry.set_placeholder_text("other model name…")
+        entry.set_tooltip_text(
+            "Any model name the provider accepts. It is remembered and added to "
+            "the list, so a model newer than this build still works."
+        )
+        entry.connect("activate", self._on_custom_model)
+        box.append(entry)
+        self.set_entry = entry
+
+        self._settings_loading = True
+        self._load_models(cur_prov, cur_model)
+        self.set_prov_dd.connect("notify::selected", self._on_settings_provider)
+        self.set_model_dd.connect("notify::selected", self._on_settings_changed)
+        self._settings_loading = False
+
+    def _load_models(self, provider: str, want: str) -> None:
+        """Fill the model dropdown for `provider` and select `want`."""
+        models = ai.models_for(provider, self._remembered_models().get(provider, []))
+        self._set_models = models
+        default = ("whatever ollama picks" if provider == "ollama"
+                   else "whatever the CLI is set to")
+        items = [f"default  ({default})"] + models
+        was = self._settings_loading
+        self._settings_loading = True
+        self.set_model_dd.set_model(Gtk.StringList.new(items))
+        self.set_model_dd.set_selected(models.index(want) + 1 if want in models else 0)
+        self._settings_loading = was
+        self._show_effective()
+
+    def _show_effective(self) -> None:
+        self.set_effective.set_text("→ " + ai.engine_label(self._settings_engine()))
+
+    def _settings_engine(self) -> str:
+        provider = self._set_provs[self.set_prov_dd.get_selected()]
+        sel = self.set_model_dd.get_selected()
+        model = self._set_models[sel - 1] if 0 < sel <= len(self._set_models) else ""
+        return f"{provider}:{model}" if model else provider
+
+    def _on_settings_provider(self, *_a) -> None:
+        if self._settings_loading:
+            return
+        self._load_models(self._set_provs[self.set_prov_dd.get_selected()], "")
+        self._on_settings_changed()
+
+    def _on_settings_changed(self, *_a) -> None:
+        if self._settings_loading:
+            return
+        engine = self._settings_engine()
+        store.set_pref("ai_engine", engine)
+        self._ai_backend = engine
+        self.ai_btn.set_sensitive(bool(self._target_ip))
+        self._show_effective()
+        self.log(f"ai engine set to {engine}")
+
+    def _on_custom_model(self, entry) -> None:
+        model = entry.get_text().strip()
+        if not model:
+            return
+        provider = self._set_provs[self.set_prov_dd.get_selected()]
+        self._remember_model(provider, model)
+        entry.set_text("")
+        self._load_models(provider, model)
+        self._on_settings_changed()
+
     def _build_actions_popover(self) -> Gtk.Popover:
         pop = Gtk.Popover()
         pop.add_css_class("ns-findings-pop")
@@ -1526,7 +1669,7 @@ class AiScanWindow(Gtk.Window):
         self.port = port
         self.devices = devices or []
         self.public = public or {}
-        self._engines = ai.engines()
+        self._engines = ai.engines(parent._remembered_models())
         ids = [e[0] for e in self._engines]
         # Never send anything before the engine is settled: use the remembered
         # choice, or the only engine available; otherwise wait for the user.

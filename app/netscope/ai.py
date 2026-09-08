@@ -3,7 +3,9 @@ the report back. Developed for and by frig.
 
 Two kinds of engine:
   - a cloud CLI already installed and logged in (claude, then gemini, codex);
-    the plugin only invokes it, never touches its config or credentials.
+    the plugin only invokes it and never writes to its config. It does read one
+    thing: the model names that CLI's own settings file mentions, so the picker
+    can offer the models you actually use. Credential files are never opened.
   - a local Ollama model over http://localhost:11434, so a private
     investigation never leaves your machine.
 """
@@ -23,7 +25,13 @@ import time
 import urllib.error
 import urllib.request
 from collections import deque
+from pathlib import Path
 from typing import Callable, Optional
+
+try:
+    import tomllib
+except ImportError:                   # python < 3.11
+    tomllib = None
 
 from . import recon
 from .recon import Dossier
@@ -36,6 +44,15 @@ from .recon import Dossier
 # The evidence in the prompt is written by devices on the LAN, so the engine
 # must be a text generator, not an agent with tools. Every backend is launched
 # with its tools disabled / read-only.
+def split_engine(engine: str) -> tuple[str, str]:
+    """An engine id is a provider, optionally with the model it should run:
+    "claude" -> ("claude", ""), "ollama:llama3.2:latest" -> ("ollama",
+    "llama3.2:latest"). An empty model means "whatever that engine defaults to".
+    """
+    provider, _, model = (engine or "").partition(":")
+    return provider, model
+
+
 def cli_model(backend: str) -> str:
     """Model override for a cloud CLI - NETSCOPE_CLAUDE_MODEL,
     NETSCOPE_GEMINI_MODEL, NETSCOPE_CODEX_MODEL. Unset leaves the CLI on its own
@@ -44,21 +61,18 @@ def cli_model(backend: str) -> str:
     return os.environ.get("NETSCOPE_" + backend.upper() + "_MODEL", "").strip()
 
 
-def _claude_cmd() -> list[str]:
+def _claude_cmd(model: str = "") -> list[str]:
     cmd = ["claude", "-p", "--output-format", "stream-json", "--verbose",
            "--include-partial-messages", "--tools", ""]
-    model = cli_model("claude")
     return cmd + (["--model", model] if model else [])
 
 
-def _gemini_cmd() -> list[str]:
+def _gemini_cmd(model: str = "") -> list[str]:
     cmd = ["gemini", "-o", "stream-json", "--approval-mode", "plan"]
-    model = cli_model("gemini")
     return cmd + (["-m", model] if model else [])
 
 
-def _codex_cmd() -> list[str]:
-    model = cli_model("codex")
+def _codex_cmd(model: str = "") -> list[str]:
     # the trailing "-" reads the prompt from stdin and has to stay last
     return (["codex", "exec", "--skip-git-repo-check", "-s", "read-only"]
             + (["-m", model] if model else []) + ["-"])
@@ -121,19 +135,102 @@ def available_backend() -> Optional[str]:
     return cloud_backend() or ("ollama" if ollama_available() else None)
 
 
-def engines() -> list[tuple[str, str]]:
+# A starting point, not a limit: any model typed into settings is used as-is
+# and remembered, so a model released after this build still works.
+KNOWN_MODELS = {
+    "claude": ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"],
+    "gemini": ["gemini-2.5-pro", "gemini-2.5-flash"],
+    "codex": ["gpt-5", "gpt-5-codex"],
+}
+
+_CONFIGS = {
+    "claude": Path.home() / ".claude" / "settings.json",
+    "gemini": Path.home() / ".gemini" / "settings.json",
+    "codex": Path.home() / ".codex" / "config.toml",
+}
+
+
+def discovered_models(provider: str) -> list[str]:
+    """Model names a provider's own CLI settings mention - the closest thing to
+    "what this subscription actually has", since none of the CLIs can list
+    models. Read-only, model names only: credential files are never opened, and
+    a missing or malformed config simply yields nothing.
+    """
+    path = _CONFIGS.get(provider)
+    if path is None:
+        return []
+    out: list = []
+    try:
+        if provider == "codex":
+            if tomllib is None:
+                return []
+            with open(path, "rb") as fh:
+                cfg = tomllib.load(fh)
+            out.append(cfg.get("model"))
+            out += list((cfg.get("tui", {}).get("model_availability_nux") or {}).keys())
+        else:
+            cfg = json.loads(path.read_text(encoding="utf-8"))
+            out.append(cfg.get("model"))
+            out += list((cfg.get("modelSettings") or {}).keys())
+    except (OSError, ValueError, TypeError, AttributeError):
+        return []
+    return [m.strip() for m in out if isinstance(m, str) and m.strip()]
+
+
+def models_for(provider: str, extra: "list[str] | tuple" = ()) -> list[str]:
+    """Models to offer for a provider, most likely first. Ollama is the only
+    one that can be asked outright, so its list is live; the rest are what the
+    CLI's settings mention, what you have picked before (`extra`), what an
+    environment override names, and a short curated fallback.
+    """
+    if provider == "ollama":
+        return ollama_models()
+    seen: set = set()
+    out: list = []
+    for m in (discovered_models(provider) + list(extra) + [cli_model(provider)]
+              + KNOWN_MODELS.get(provider, [])):
+        m = (m or "").strip()
+        if m and m not in seen:
+            seen.add(m)
+            out.append(m)
+    return out
+
+
+def providers() -> list[str]:
+    """Every AI provider usable right now, cloud CLIs first."""
+    out = [n for n, _ in CLI_BACKENDS if shutil.which(n)]
+    if ollama_available():
+        out.append("ollama")
+    return out
+
+
+def engine_label(engine: str) -> str:
+    """How an engine id reads in a picker."""
+    provider, model = split_engine(engine)
+    where = "local" if provider == "ollama" else "cloud"
+    if not model and provider != "ollama":
+        model = cli_model(provider)
+    return f"{provider} · {model}  ({where})" if model else f"{provider}  ({where})"
+
+
+def engines(extra: "dict[str, list[str]] | None" = None) -> list[tuple[str, str]]:
     """(id, label) for every engine available right now, for a selector.
 
-    Every pulled Ollama model is its own entry, with the id "ollama:<model>",
-    which _stream routes to that model. Plain "ollama" still means "whatever
-    ollama_model() resolves to" and stays valid as a saved preference.
+    Each entry is a provider and a model: "claude:claude-opus-5",
+    "ollama:llama3.2:latest". A bare provider id means "whatever that CLI is
+    configured for" and stays valid as a saved preference. `extra` adds models
+    remembered per provider, so a model typed into settings keeps showing up.
     """
+    extra_all = extra or {}
     out = []
     for name, _ in CLI_BACKENDS:
-        if shutil.which(name):
-            model = cli_model(name)
-            out.append((name, f"{name} · {model}  (cloud)" if model
-                        else f"{name}  (cloud)"))
+        if not shutil.which(name):
+            continue
+        env = cli_model(name)
+        out.append((name, engine_label(name)))     # whatever the CLI defaults to
+        for m in models_for(name, extra_all.get(name, ())):
+            if m != env:                           # already shown on the bare entry
+                out.append((f"{name}:{m}", f"{name} · {m}  (cloud)"))
     if ollama_available():
         models = ollama_models()
         env = os.environ.get("NETSCOPE_OLLAMA_MODEL", "").strip()
@@ -216,8 +313,9 @@ def _kill_group(pgid, proc, sig) -> None:
         pass
 
 
-def _stream_cli(backend: str, prompt: str, on_delta, on_done, stop) -> None:
-    cmd = _CLI[backend]()
+def _stream_cli(backend: str, prompt: str, on_delta, on_done, stop,
+                model: str = "") -> None:
+    cmd = _CLI[backend](model or cli_model(backend))
     try:
         workdir = tempfile.mkdtemp(prefix="netscope-ai-")
         proc = subprocess.Popen(
@@ -423,11 +521,12 @@ def _stream(prompt: str, on_delta, on_done, stop, backend: Optional[str]) -> Non
         if not engine:
             done_once("", "no AI engine available (install claude/gemini/codex, or run ollama)")
             return
-        if engine == "ollama" or engine.startswith("ollama:"):
-            model = engine.split(":", 1)[1] if ":" in engine else ollama_model()
-            _stream_ollama(prompt, on_delta, done_once, stop, model)
-        elif engine in _CLI:
-            _stream_cli(engine, prompt, on_delta, done_once, stop)
+        provider, model = split_engine(engine)
+        if provider == "ollama":
+            _stream_ollama(prompt, on_delta, done_once, stop,
+                           model or ollama_model())
+        elif provider in _CLI:
+            _stream_cli(provider, prompt, on_delta, done_once, stop, model)
         else:
             done_once("", f"unknown engine: {engine}")
     except BaseException as e:            # noqa: BLE001 - the contract wins
