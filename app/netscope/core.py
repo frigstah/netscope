@@ -24,7 +24,7 @@ from typing import Callable, Iterable, Optional
 APP_NAME = "NetScope"
 APP_ID = "io.github.frigstah.netscope"
 TAGLINE = "developed for and by frig"
-VERSION = "1.6.3"
+VERSION = "1.7.0"
 
 CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "netscope"
 LAST_SCAN_FILE = CACHE_DIR / "last-scan.json"
@@ -321,6 +321,26 @@ def wake_on_lan(mac: str, broadcast: str = "255.255.255.255") -> bool:
 # Wi-Fi context
 # --------------------------------------------------------------------------- #
 
+def _nmcli_split(line: str) -> list:
+    """Split an `nmcli -t` row on unescaped ':' separators."""
+    out, cur, i = [], "", 0
+    while i < len(line):
+        c = line[i]
+        if c == "\\" and i + 1 < len(line):
+            cur += line[i + 1]
+            i += 2
+            continue
+        if c == ":":
+            out.append(cur)
+            cur = ""
+            i += 1
+            continue
+        cur += c
+        i += 1
+    out.append(cur)
+    return out
+
+
 def _wifi_iface() -> str:
     for i in interfaces():
         if i.kind == "wifi" and i.up:
@@ -347,12 +367,13 @@ def wifi_status(iface: str = "") -> Optional[dict]:
     info = {"iface": iface, "ssid": "", "signal_pct": -1, "signal_dbm": 0,
             "band": "", "channel": "", "rate": "", "security": "", "bssid": ""}
     # nmcli: the active AP row
-    # no BSSID here: its escaped colons make -t output ambiguous to split
+    # nmcli -t escapes a literal ':' inside a value as '\\:', so split on
+    # unescaped separators only - an SSID containing ':' shifted every field
     out = _run(["nmcli", "-t", "-f", "ACTIVE,SSID,SIGNAL,CHAN,RATE,SECURITY",
                 "dev", "wifi"], timeout=3)
     for line in out.splitlines():
-        parts = line.split(":", 5)
-        if len(parts) == 6 and parts[0] == "yes":
+        parts = _nmcli_split(line)
+        if len(parts) >= 6 and parts[0] == "yes":
             info["ssid"] = parts[1]
             try:
                 info["signal_pct"] = int(parts[2])

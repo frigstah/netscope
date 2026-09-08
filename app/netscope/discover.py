@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 import socket
+from urllib.parse import urlparse
 import struct
 import subprocess
 from dataclasses import dataclass, field
@@ -42,13 +43,36 @@ def _parse_ssdp_headers(data: bytes) -> dict:
     return out
 
 
-def _fetch_upnp_description(location: str, timeout: float = 3.0) -> dict:
-    """GET the UPnP device description XML and pull the friendly identity."""
+MAX_DESC_BYTES = 262144
+
+
+def _safe_location(location: str, expect_ip: str) -> bool:
+    """A device controls its own LOCATION header, so only follow it when it is
+    plain http(s) pointing back at the device that answered. Without this a
+    device could hand us file:///... or an unrelated internal URL."""
+    try:
+        u = urlparse(location)
+    except ValueError:
+        return False
+    if u.scheme not in ("http", "https"):
+        return False
+    host = (u.hostname or "").strip("[]")
+    return bool(host) and (not expect_ip or host == expect_ip)
+
+
+def _fetch_upnp_description(location: str, expect_ip: str = "", timeout: float = 3.0) -> dict:
+    """GET the UPnP device description XML and pull the friendly identity.
+    Restricted to http(s) on the responding device, with a bounded response."""
+    if not _safe_location(location, expect_ip):
+        return {}
     try:
         out = subprocess.run(
-            ["curl", "-s", "-m", str(timeout), location],
+            ["curl", "-s", "-m", str(timeout),
+             "--proto", "=http,https", "--proto-redir", "=http,https",
+             "--max-redirs", "2", "--max-filesize", str(MAX_DESC_BYTES),
+             location],
             capture_output=True, text=True, timeout=timeout + 1, check=False,
-        ).stdout
+        ).stdout[:MAX_DESC_BYTES]
     except (OSError, subprocess.TimeoutExpired):
         return {}
     d = {}
@@ -92,7 +116,7 @@ def ssdp_query(ip: str, timeout: float = 2.0) -> Optional[Upnp]:
             return None
         up = Upnp(server=server, device_type=dtype)
         if location:
-            desc = _fetch_upnp_description(location)
+            desc = _fetch_upnp_description(location, expect_ip=ip)
             up.friendly_name = desc.get("friendlyName", "")
             up.manufacturer = desc.get("manufacturer", "")
             up.model = " ".join(x for x in (desc.get("modelName", ""), desc.get("modelNumber", "")) if x)
@@ -170,12 +194,17 @@ def netbios_name(ip: str, timeout: float = 1.5) -> Optional[NetBIOS]:
         return None
     # skip header(12) + question echo(name + 4). Answer: name(34?) ... find rdata.
     try:
-        # locate the NBSTAT answer: header(12), then a name (var), type/class/ttl/rdlen
+        if len(data) < 12:
+            return None
+        qdcount, ancount = struct.unpack(">HH", data[4:8])
+        if ancount < 1:
+            return None
         idx = 12
-        # skip the echoed question name (starts with length byte 0x20 -> 32 bytes + null)
-        qlen = data[idx]
-        idx += 1 + qlen + 1  # length + label + terminating null
-        idx += 4             # qtype + qclass
+        # a reply may or may not echo the question; honour qdcount
+        for _ in range(qdcount):
+            qlen = data[idx]
+            idx += 1 + qlen + 1   # length + label + terminating null
+            idx += 4              # qtype + qclass
         # answer RR
         # answer name is usually a pointer (0xC0 0x0C) = 2 bytes, or repeated name
         if data[idx] & 0xC0 == 0xC0:
@@ -244,16 +273,22 @@ def snmp_sysdescr(ip: str, community: str = "public", timeout: float = 1.5) -> s
     if pos < 0:
         return ""
     i = pos + len(oid)
-    if i < len(data) and data[i] == 0x04:  # OCTET STRING
-        i += 1
-        ln = data[i]
-        i += 1
-        if ln & 0x80:
-            nby = ln & 0x7F
-            ln = int.from_bytes(data[i:i+nby], "big")
-            i += nby
-        return data[i:i+ln].decode("utf-8", "replace").strip()[:200]
-    return ""
+    if i >= len(data) or data[i] != 0x04:  # OCTET STRING
+        return ""
+    i += 1
+    if i >= len(data):
+        return ""
+    ln = data[i]
+    i += 1
+    if ln & 0x80:
+        nby = ln & 0x7F
+        if nby == 0 or i + nby > len(data):
+            return ""
+        ln = int.from_bytes(data[i:i + nby], "big")
+        i += nby
+    if ln < 0 or i > len(data):
+        return ""
+    return data[i:i + ln].decode("utf-8", "replace").strip()[:200]
 
 
 # --------------------------------------------------------------------------- #

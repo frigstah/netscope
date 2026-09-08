@@ -74,12 +74,16 @@ and plain sockets. No root, no `nmap`.
   inventory. Name a device and mark it trusted from the probe row; untrusted
   present devices show an `UNKN` mark and a count badge (`⚠ N`) by the HOSTS
   title. Turn on **WATCH** (top bar) to keep sweeping, and get a desktop
-  notification when an unknown device joins the network or a new port opens on
-  a known host. A newly-seen device is tagged `NEW`.
+  notification when an unknown device joins the network. A newly-seen device is
+  tagged `NEW`. Watching sweeps for devices only; a new-open-port alert is
+  raised when you probe a host again and find a port that was not there before.
+  Devices with randomized/private MACs are not alerted on, because they rejoin
+  under a new address each time (this also covers manually-set local MACs).
 
 ## Requirements
 
-- `python3`, `python-gobject`, `gtk4`, `libadwaita` (`omarchy pkg add python-gobject gtk4 libadwaita`)
+- `python3` 3.10 or newer, `python-gobject`, `gtk4` 4.10+, `libadwaita` 1
+  (`omarchy pkg add python-gobject gtk4 libadwaita`)
 - `iproute2`, `iputils` (ping), `curl` - present on stock Omarchy
 - `avahi` for mDNS names, `networkmanager`/`iw` for the Wi-Fi panel (optional)
 - for AI SCAN: a cloud AI CLI (`claude`, `gemini` or `codex`) **or** a local
@@ -103,7 +107,8 @@ credentials can reach it (SSH key or a token) before running `plugin add`.
 - **right** - open the NetScope window
 - **middle** - background LAN sweep
 - popout keys - `o` open, `s` sweep, `r` refresh, `c` copy public IP, arrows + enter
-- the bar icon tints urgent while any untrusted device is present, and the popout shows the unknown count
+- the bar icon follows the theme; enable "Tint icon on unknown device" to make it
+  turn urgent while an untrusted device is present. The popout shows the unknown count
 
 Settings live under the `io.github.frigstah.netscope` entry in `~/.config/omarchy/shell.json`:
 `pollSeconds` and `autoScanOnOpen`.
@@ -151,11 +156,23 @@ live in `~/.local/state/netscope/`. Stop it with
 
 ## Privacy
 
-The LAN sweep, port probe and fingerprint stay on your machine. The AI SCAN
-sends the collected evidence about the selected device to whichever AI CLI you
-have installed, which talks to that tool's own provider - so that one feature
-leaves your machine by design. Choose the **Ollama** engine in the AI window to
-run the investigation fully on-device instead, or skip AI SCAN entirely.
+The LAN sweep, port probe, device fingerprint and inventory all stay on your
+machine. Two things do reach the internet:
+
+- **Public IP lookup.** On start (and on refresh) NetScope asks a third-party
+  service for your public address and rough location: `api.ipify.org` (with
+  `icanhazip.com` / `ifconfig.me` as fallbacks) and `ipinfo.io` for the ISP and
+  city. Those services see your IP address by definition. The result is cached
+  for ten minutes in `~/.cache/netscope`.
+- **AI SCAN.** Sends the collected evidence about the selected device (or the
+  inventory, for a whole-network summary) to whichever AI engine you pick.
+
+The AI window never sends anything until an engine is chosen: with both a cloud
+CLI and a local Ollama available it waits for you, and remembers the choice.
+Pick **Ollama** to keep the investigation entirely on this machine, or skip
+AI SCAN. Reports written with `--sanitized` mask the public address, Wi-Fi
+identity, hostnames, MAC suffixes and any globally-routable device address;
+private LAN addresses are kept.
 
 Override the local endpoint/model with `NETSCOPE_OLLAMA_HOST` and
 `NETSCOPE_OLLAMA_MODEL`.

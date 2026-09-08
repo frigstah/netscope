@@ -2,6 +2,46 @@
 
 Notable changes, newest first.
 
+## [1.7.0] - 2026-09-08
+
+Security, privacy and correctness pass ahead of a public release.
+
+### Security
+- A device controls its own UPnP `LOCATION`, and it was fetched unrestricted, so
+  a device on the LAN could point NetScope at `file:///...` (or an unrelated
+  host) and have that content become its "identity" - and then AI evidence.
+  Descriptions are now only fetched over http(s), only from the device that
+  answered, with redirects and response size bounded.
+- CSV exports neutralize spreadsheet formula injection: a device name off the
+  network beginning with `=`, `+`, `-` or `@` is no longer run as a formula.
+
+### Privacy
+- The AI window no longer starts a request before the engine is settled. With
+  both a cloud CLI and a local Ollama available it waits for a choice and
+  remembers it, so nothing reaches a cloud provider by default.
+- `--sanitized` reports now mask every globally-routable address (including
+  IPv6 and addresses inside events), hostnames and MAC suffixes. Private LAN
+  addresses are kept.
+- Documented the automatic third-party public-IP and location lookup.
+
+### Fixed
+- AI cancellation kills the whole process group, so STOP works even when the
+  CLI spawned helpers holding its pipes; RERUN cancels the previous run instead
+  of interleaving two reports.
+- Inventory survives a damaged file (wrong shape or invalid JSON is quarantined,
+  not silently dropped).
+- Learning a device's MAC no longer creates a second record and orphan its name
+  and trust setting.
+- IPv6-only devices are now aged toward "gone"; probing a narrower port range no
+  longer discards the wider baseline and then reports old ports as new.
+- SNMP replies are bounds-checked, NetBIOS parsing honours the header counts,
+  IPv6 web/HTTP URLs are bracketed, and an SSID containing ":" no longer shifts
+  the Wi-Fi fields.
+
+### Changed
+- Removed the unused `grim` dependency; documented minimum Python/GTK versions;
+  corrected the watch and icon-tinting claims in the README.
+
 ## [1.6.3] - 2026-09-08
 
 ### Changed

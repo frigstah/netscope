@@ -89,7 +89,8 @@ class HttpInfo:
 
 
 def _http_probe(ip: str, port: int, scheme: str, timeout: float = 4.0) -> Optional[HttpInfo]:
-    url = f"{scheme}://{ip}:{port}/"
+    host = f"[{ip}]" if ":" in ip else ip
+    url = f"{scheme}://{host}:{port}/"
     try:
         r = subprocess.run(
             ["curl", "-s", "-m", str(timeout), "-k", "-L", "--max-redirs", "2",

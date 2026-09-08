@@ -161,7 +161,7 @@ def cmd_probe(ip: str, ports: str, as_json: bool) -> int:
         if h.get("ip") == ip:
             mac = h.get("mac", "")
             break
-    events = store.record_probe(ip, mac, hits)
+    events = store.record_probe(ip, mac, hits, scanned_ports=plist)
     notify.notify_events(events)
     findings, score, lvl = assess.assess(hits)
     store.update_device(store.device_key(mac, ip), risk=score)

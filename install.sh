@@ -14,7 +14,7 @@ CLI="$HERE/bin/netscope"
 
 # --- dependencies ---------------------------------------------------------- #
 missing=()
-for dep in python3 ip ping curl grim; do
+for dep in python3 ip ping curl; do
   command -v "$dep" >/dev/null || missing+=("$dep")
 done
 python3 -c 'import gi; gi.require_version("Gtk","4.0"); gi.require_version("Adw","1"); from gi.repository import Gtk, Adw' 2>/dev/null \

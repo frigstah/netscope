@@ -54,6 +54,11 @@ def open_url(url: str) -> bool:
     return _detach(["xdg-open", url])
 
 
+def _host_for_url(ip: str) -> str:
+    """An IPv6 literal must be bracketed in a URL."""
+    return f"[{ip}]" if ":" in ip and not ip.startswith("[") else ip
+
+
 def web_url(ip: str, open_ports: dict | None = None) -> str:
     """Pick the best URL for a device from its open ports (dict {port: svc} or
     a set of ints). Falls back to http://ip."""
@@ -62,11 +67,12 @@ def web_url(ip: str, open_ports: dict | None = None) -> str:
         ports = {int(p) for p in open_ports if str(p).isdigit()}
     elif open_ports:
         ports = {int(p) for p in open_ports}
+    host = _host_for_url(ip)
     for port, scheme in _WEB_PREF:
         if port in ports:
             suffix = "" if port in (80, 443) else f":{port}"
-            return f"{scheme}://{ip}{suffix}"
-    return f"http://{ip}"
+            return f"{scheme}://{host}{suffix}"
+    return f"http://{host}"
 
 
 def open_web(ip: str, open_ports=None) -> bool:

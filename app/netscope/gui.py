@@ -276,6 +276,7 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         self._cursor_on = True
         self._pulse = True
         self._probe_cache: dict[str, list] = {}   # ip -> [core.PortHit] from the last probe
+        self._last_ports: list = []               # the port range of the last probe
         self._ai_windows: list = []
         self._ai_backend = ai.available_backend()
         self._public: dict = {}
@@ -1195,6 +1196,7 @@ class NetScopeWindow(Gtk.ApplicationWindow):
             self.log("no ports to probe")
             return
         ip = self._target_ip
+        self._last_ports = list(ports)
         self._probing = True
         self._probe_stop = threading.Event()
         stop = self._probe_stop
@@ -1259,7 +1261,7 @@ class NetScopeWindow(Gtk.ApplicationWindow):
             row = self._host_index.get(ip)
             mac = row.mac if row else next(
                 (d.mac for d in store.load().values() if d.ip == ip), "")
-            events = store.record_probe(ip, mac, hits)
+            events = store.record_probe(ip, mac, hits, scanned_ports=self._last_ports)
             if self._watch_on:
                 notify.notify_events(events)
             for event in events:
@@ -1351,9 +1353,9 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         hits = self._probe_cache.get(ip)
         win = AiScanWindow(self, ip, host, hits, self._ai_backend)
         self._ai_windows.append(win)
-        self.log(f"ai scan {ip} via {self._ai_backend}")
         win.present()
-        win.start()
+        win.start_if_ready()
+        self.log(f"ai scan {ip}" + (f" via {win.backend}" if win.backend else " - choose an engine"))
 
     def start_ai_network(self) -> None:
         if not self._ai_backend:
@@ -1366,9 +1368,10 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         win = AiScanWindow(self, "network", backend=self._ai_backend, mode="network",
                            devices=devices, public=dict(self._public))
         self._ai_windows.append(win)
-        self.log(f"ai network summary via {self._ai_backend} ({len(devices)} devices)")
         win.present()
-        win.start()
+        win.start_if_ready()
+        self.log(f"ai network summary ({len(devices)} devices)"
+                 + (f" via {win.backend}" if win.backend else " - choose an engine"))
 
     def _probe_failed(self, err: str) -> bool:
         self._probing = False
@@ -1408,8 +1411,19 @@ class AiScanWindow(Gtk.Window):
         self.devices = devices or []
         self.public = public or {}
         self._engines = ai.engines()
+        ids = [e[0] for e in self._engines]
+        # Never send anything before the engine is settled: use the remembered
+        # choice, or the only engine available; otherwise wait for the user.
+        saved = store.get_pref("ai_engine")
+        if saved in ids:
+            self.backend = saved
+        elif len(ids) == 1:
+            self.backend = ids[0]
+        else:
+            self.backend = None
         self._stop = threading.Event()
         self._buffer_started = False
+        self._started = False
         self._cursor_on = True
 
         overlay = Gtk.Overlay()
@@ -1446,11 +1460,9 @@ class AiScanWindow(Gtk.Window):
             self._engine_ids = ids
             self.engine_dd = _dropdown([e[1] for e in self._engines], 150, cap=22)
             sel = ids.index(self.backend) if self.backend in ids else 0
-            self.backend = ids[sel]
             self.engine_dd.set_selected(sel)
             self.engine_dd.set_tooltip_text("Which AI engine to use (cloud, or local Ollama)")
-            self.engine_dd.connect("notify::selected",
-                                   lambda dd, _p: setattr(self, "backend", self._engine_ids[dd.get_selected()]))
+            self.engine_dd.connect("notify::selected", self._on_engine_changed)
             header.append(self.engine_dd)
         self.spinner = Gtk.Label(label="●")
         self.spinner.add_css_class("ns-live")
@@ -1499,6 +1511,28 @@ class AiScanWindow(Gtk.Window):
         root.append(footer)
         return root
 
+    def _on_engine_changed(self, dd, _p) -> None:
+        self.backend = self._engine_ids[dd.get_selected()]
+        store.set_pref("ai_engine", self.backend)
+        if not self._started:
+            self.status.set_text(f"press RERUN to run on {self.backend}")
+
+    def start_if_ready(self) -> None:
+        """Only send once the engine is settled. With both a cloud CLI and a
+        local model available and no saved choice, wait for the user."""
+        if self.backend:
+            self.start()
+        else:
+            names = ", ".join(e[0] for e in self._engines)
+            self.status.set_text("choose an engine, then press RERUN")
+            self.progress.set_fraction(0)
+            self._append(
+                "Nothing has been sent yet.\n\n"
+                f"Available engines: {names}.\n"
+                "A cloud engine sends this device's details to that tool's provider; "
+                "a local Ollama model keeps everything on this machine.\n\n"
+                "Pick one in the header, then press RERUN. Your choice is remembered.\n")
+
     def _blink(self) -> bool:
         if self._done_flag():
             self.spinner.set_text("●")
@@ -1515,6 +1549,14 @@ class AiScanWindow(Gtk.Window):
         return getattr(self, "_finished", False)
 
     def start(self) -> None:
+        if not self.backend:
+            self.start_if_ready()
+            return
+        # cancel any run still in flight so RERUN cannot interleave two reports
+        prev = getattr(self, "_stop", None)
+        if prev is not None and not self._done_flag():
+            prev.set()
+        self._started = True
         # reset so RERUN works
         self._finished = False
         self._stop = threading.Event()

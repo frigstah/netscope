@@ -11,7 +11,9 @@ Two kinds of engine:
 from __future__ import annotations
 
 import json
+import os
 import queue
+import signal
 from collections import deque
 import os
 import shutil
@@ -125,11 +127,24 @@ def _extract_claude_delta(obj: dict) -> str:
 
 
 def _extract_gemini_delta(obj: dict) -> str:
+    # an echoed user/system turn is not report text
+    if obj.get("role") in ("user", "system"):
+        return ""
     if obj.get("type") in ("content", "assistant", "message"):
         c = obj.get("text") or obj.get("content") or ""
         if isinstance(c, str):
             return c
     return ""
+
+
+def _kill_group(proc, sig) -> None:
+    try:
+        os.killpg(os.getpgid(proc.pid), sig)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.kill() if sig == signal.SIGKILL else proc.terminate()
+        except OSError:
+            pass
 
 
 def _stream_cli(backend: str, prompt: str, on_delta, on_done, stop) -> None:
@@ -138,6 +153,7 @@ def _stream_cli(backend: str, prompt: str, on_delta, on_done, stop) -> None:
         proc = subprocess.Popen(
             cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, bufsize=1,
+            start_new_session=True,   # own process group, so STOP can kill descendants
         )
     except OSError as e:
         on_done("", f"could not launch {backend}: {e}")
@@ -220,13 +236,18 @@ def _stream_cli(backend: str, prompt: str, on_delta, on_done, stop) -> None:
     except Exception as e:
         error = str(e)[:200]
     finally:
+        # a CLI may spawn helpers that inherit the pipes; killing only the parent
+        # leaves the reader blocked, so signal the whole group
         if proc.poll() is None:
-            proc.terminate()
+            _kill_group(proc, signal.SIGTERM)
         try:
             code = proc.wait(timeout=2)
         except subprocess.TimeoutExpired:
-            proc.kill()
-            code = proc.wait()
+            _kill_group(proc, signal.SIGKILL)
+            try:
+                code = proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                code = -9
         for worker in workers:
             worker.join(timeout=1)
         for stream in (proc.stdin, proc.stdout, proc.stderr):
@@ -238,6 +259,7 @@ def _stream_cli(backend: str, prompt: str, on_delta, on_done, stop) -> None:
 
 
 def _stream_ollama(prompt: str, on_delta, on_done, stop, model: str) -> None:
+    # NOTE: urlopen blocks until the first bytes arrive; STOP is checked per chunk.
     body = json.dumps({"model": model, "prompt": prompt, "stream": True}).encode()
     req = urllib.request.Request(ollama_host() + "/api/generate", data=body,
                                  headers={"Content-Type": "application/json"})

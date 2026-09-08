@@ -144,19 +144,37 @@ class Device:
 
 def _load_raw() -> dict:
     try:
-        return json.loads(INVENTORY_FILE.read_text())
-    except (OSError, ValueError):
+        data = json.loads(INVENTORY_FILE.read_text())
+    except OSError:
         return {}
+    except ValueError:
+        _quarantine("unreadable JSON")
+        return {}
+    if not isinstance(data, dict):
+        _quarantine(f"expected an object, got {type(data).__name__}")
+        return {}
+    return data
+
+
+def _quarantine(why: str) -> None:
+    """Never silently discard an inventory we could not parse."""
+    try:
+        bad = INVENTORY_FILE.with_suffix(f".corrupt-{int(_now())}.json")
+        INVENTORY_FILE.replace(bad)
+    except OSError:
+        return
 
 
 def load() -> dict[str, Device]:
     out: dict[str, Device] = {}
     for key, d in _load_raw().items():
+        if not isinstance(d, dict):
+            continue
         try:
             fields = {k: d[k] for k in d if k in Device.__dataclass_fields__}
             fields["key"] = key
             out[key] = Device(**fields)
-        except (TypeError, KeyError):
+        except (TypeError, KeyError, ValueError):
             continue
     return out
 
@@ -182,6 +200,18 @@ def _set_meta(**kw) -> None:
 
 def seeded() -> bool:
     return bool(_meta().get("seeded"))
+
+
+def get_pref(key: str, default=None):
+    """Small user preferences, kept alongside the inventory metadata."""
+    return (_meta().get("prefs") or {}).get(key, default)
+
+
+def set_pref(key: str, value) -> None:
+    m = _meta()
+    prefs = m.get("prefs") or {}
+    prefs[key] = value
+    _set_meta(prefs=prefs)
 
 
 # --------------------------------------------------------------------------- #
@@ -258,6 +288,8 @@ def record_sweep(hosts: list, network: str = "") -> list[dict]:
 
     for h in hosts:
         key = device_key(h.mac, h.ip)
+        if h.mac:
+            _absorb_ip_record(devices, key, h.ip)
         present.add(key)
         d = devices.get(key)
         if d is None:
@@ -278,7 +310,9 @@ def record_sweep(hosts: list, network: str = "") -> list[dict]:
         d.missed = 0
 
     for key, d in devices.items():
-        if key in present or not d.present or d.ip not in scanned:
+        # a sweep also runs IPv6 neighbour discovery, so v6 devices are in scope
+        in_scope = (d.ip in scanned) or (bool(scanned) and ":" in (d.ip or ""))
+        if key in present or not d.present or not in_scope:
             continue
         d.missed += 1
         if d.missed >= GONE_THRESHOLD:
@@ -291,6 +325,31 @@ def record_sweep(hosts: list, network: str = "") -> list[dict]:
         _set_meta(seeded=True, first_sweep=now)
     append_events(events)
     return events
+
+
+_CARRY = ("name", "trusted", "tags", "notes", "ports", "ports_at", "risk", "dtype")
+
+
+def _absorb_ip_record(devices: dict, mac_key: str, ip: str) -> None:
+    """A host first seen without a MAC is keyed by IP. Once the MAC is known it
+    would become a second record, orphaning the name/trust the user set, so fold
+    the old record into the MAC-keyed one."""
+    old_key = f"ip:{ip}"
+    if old_key == mac_key:
+        return
+    old = devices.pop(old_key, None)
+    if old is None:
+        return
+    new = devices.get(mac_key)
+    if new is None:
+        old.key = mac_key
+        devices[mac_key] = old
+        return
+    for attr in _CARRY:
+        cur = getattr(new, attr, None)
+        if not cur and getattr(old, attr, None):
+            setattr(new, attr, getattr(old, attr))
+    new.first_seen = min(new.first_seen or old.first_seen, old.first_seen or new.first_seen)
 
 
 def _fill(d: Device, h) -> Device:
@@ -308,21 +367,29 @@ def _fill(d: Device, h) -> Device:
 
 
 @_transaction
-def record_probe(ip: str, mac: str, hits: list) -> list[dict]:
+def record_probe(ip: str, mac: str, hits: list, scanned_ports=None) -> list[dict]:
     """Store a probe's open ports for a device and emit port_new events for
-    ports not seen on it before."""
+    ports not seen on it before. `scanned_ports` is the range that was actually
+    probed; ports outside it keep their previous state instead of looking closed
+    (and then 'new' again on the next wider scan)."""
     devices = load()
     key = device_key(mac, ip)
     d = devices.get(key)
     if d is None:
         return []
-    new_ports = {str(h.port): h.service for h in hits}
+    found = {str(h.port): h.service for h in hits}
     events = []
     if d.ports_at > 0:  # only alert once we have a prior baseline for this host
-        for p, svc in new_ports.items():
+        for p, svc in found.items():
             if p not in d.ports:
                 events.append(_ev(EV_PORT_NEW, d, f"{p}/tcp {svc}".strip()))
-    d.ports = new_ports
+    if scanned_ports:
+        covered = {str(p) for p in scanned_ports}
+        kept = {p: svc for p, svc in (d.ports or {}).items() if p not in covered}
+        kept.update(found)
+        d.ports = kept
+    else:
+        d.ports = found
     d.ports_at = _now()
     save(devices)
     append_events(events)

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import csv
 import html
+import ipaddress
 import io
 import json
 import time
@@ -34,15 +35,51 @@ def _gather(refresh_public: bool = False) -> dict:
     }
 
 
+MASK = "•••"
+
+
+def _is_global_ip(value: str) -> bool:
+    """True for a publicly-routable address. Private/link-local LAN addresses
+    are not identifying, so they survive sanitization."""
+    try:
+        return ipaddress.ip_address(str(value)).is_global
+    except ValueError:
+        return False
+
+
+def _mask_ip(value: str) -> str:
+    return MASK if _is_global_ip(value) else value
+
+
+def _mask_mac(mac: str) -> str:
+    """Keep the vendor OUI, drop the unique half."""
+    parts = str(mac).split(":")
+    return ":".join(parts[:3] + ["xx"] * (len(parts) - 3)) if len(parts) == 6 else mac
+
+
 def _mask(data: dict) -> dict:
     p = data.get("public") or {}
-    for k in ("ipv4", "ipv6", "hostname", "city", "region"):
+    for k in ("ipv4", "ipv6", "hostname", "city", "region", "org", "asn"):
         if p.get(k):
-            p[k] = "•••"
+            p[k] = MASK
     if data.get("wifi"):
         for k in ("ssid", "bssid"):
             if data["wifi"].get(k):
-                data["wifi"][k] = "•••"
+                data["wifi"][k] = MASK
+    for d in data.get("devices") or []:
+        if d.get("ip"):
+            d["ip"] = _mask_ip(d["ip"])
+        if d.get("mac"):
+            d["mac"] = _mask_mac(d["mac"])
+        for k in ("hostname",):
+            if d.get(k):
+                d[k] = MASK
+        d["ipv6"] = [_mask_ip(a) for a in (d.get("ipv6") or [])]
+    for e in data.get("events") or []:
+        if e.get("ip"):
+            e["ip"] = _mask_ip(e["ip"])
+        if e.get("mac"):
+            e["mac"] = _mask_mac(e["mac"])
     return data
 
 
@@ -67,6 +104,17 @@ def as_json(data: dict) -> str:
     return json.dumps(data, indent=2)
 
 
+def _csv_safe(value):
+    """A device name or vendor comes off the network, so a leading =, +, -, @
+    (or a control char) would be run as a formula by a spreadsheet."""
+    if value is None:
+        return ""
+    t = str(value)
+    if t[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + t
+    return t
+
+
 def as_csv(data: dict) -> str:
     buf = io.StringIO()
     w = csv.writer(buf)
@@ -74,8 +122,9 @@ def as_csv(data: dict) -> str:
                 "trusted", "risk", "open_ports", "first_seen", "last_seen"])
     for d in data["devices"]:
         w.writerow([
-            d["ip"], d["mac"], d.get("name") or d.get("hostname", ""), d.get("vendor", ""),
-            d.get("dtype", ""), _flags(d), d.get("present"), d.get("trusted"),
+            _csv_safe(d["ip"]), _csv_safe(d["mac"]),
+            _csv_safe(d.get("name") or d.get("hostname", "")), _csv_safe(d.get("vendor", "")),
+            _csv_safe(d.get("dtype", "")), _flags(d), d.get("present"), d.get("trusted"),
             d.get("risk") if d.get("risk", -1) >= 0 else "", _ports_str(d),
             time.strftime("%Y-%m-%d %H:%M", time.localtime(d.get("first_seen", 0))),
             time.strftime("%Y-%m-%d %H:%M", time.localtime(d.get("last_seen", 0))),
