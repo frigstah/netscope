@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 import socket
+import time
 from urllib.parse import urlparse
 import struct
 import subprocess
@@ -17,11 +18,33 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 
+def _safe(value, cap: int) -> str:
+    """Everything this module extracts is chosen by the device being probed and
+    ends up in a terminal, a report and an AI prompt. Blank out every
+    non-printable character (the C0/C1 controls that drive a terminal, but also
+    the zero-width and bidi-override formatters that disguise what it shows),
+    flatten newlines (so a device cannot forge report sections or inject
+    instructions) and cap the length (so it cannot flood the prompt)."""
+    t = "".join(c if c.isprintable() else " " for c in str(value or ""))
+    t = re.sub(r"\s+", " ", t).strip()
+    return (t[: cap - 1] + "…") if len(t) > cap else t
+
+
 # --------------------------------------------------------------------------- #
 # SSDP / UPnP
 # --------------------------------------------------------------------------- #
 
 _SSDP_MCAST = ("239.255.255.250", 1900)
+
+# The responder decides how often it answers, so a per-recv timeout alone lets
+# one chatty device hold the worker thread forever. Bound the loops by wall
+# clock and by reply count as well.
+MAX_SSDP_REPLIES = 64
+MAX_SSDP_TYPES = 16
+MAX_HEADER_CHARS = 120
+# LOCATION is a URL we hand to curl, so it needs more room than the descriptive
+# headers before truncation would break the fetch.
+MAX_LOCATION_CHARS = 512
 
 
 def _ssdp_msearch(target: tuple, st: str = "ssdp:all", mx: int = 1) -> bytes:
@@ -39,7 +62,8 @@ def _parse_ssdp_headers(data: bytes) -> dict:
     for line in data.decode("utf-8", "replace").splitlines():
         if ":" in line:
             k, _, v = line.partition(":")
-            out[k.strip().lower()] = v.strip()
+            k = k.strip().lower()[:64]
+            out[k] = _safe(v, MAX_LOCATION_CHARS if k == "location" else MAX_HEADER_CHARS)
     return out
 
 
@@ -76,10 +100,19 @@ def _fetch_upnp_description(location: str, expect_ip: str = "", timeout: float =
     except (OSError, subprocess.TimeoutExpired):
         return {}
     d = {}
+    # A lazy `<tag>(.*?)</tag>` restarts at every opening tag, so a body of
+    # 256 KB of unclosed <friendlyName> costs a minute of CPU on the worker
+    # thread and hands the device back the control the SSDP deadline took away.
+    # Scanning for the first opener and the first closer after it picks exactly
+    # the same span in linear time.
+    low = out.lower()
     for tag in ("friendlyName", "manufacturer", "modelName", "modelNumber", "deviceType"):
-        m = re.search(rf"<{tag}>(.*?)</{tag}>", out, re.IGNORECASE | re.DOTALL)
-        if m:
-            d[tag] = re.sub(r"\s+", " ", m.group(1)).strip()[:120]
+        opener, closer = f"<{tag.lower()}>", f"</{tag.lower()}>"
+        start = low.find(opener)
+        end = low.find(closer, start + len(opener)) if start >= 0 else -1
+        if end < 0:
+            continue
+        d[tag] = _safe(out[start + len(opener):end], 120)
     return d
 
 
@@ -99,8 +132,13 @@ def ssdp_query(ip: str, timeout: float = 2.0) -> Optional[Upnp]:
         s.settimeout(timeout)
         s.sendto(_ssdp_msearch((ip, 1900)), (ip, 1900))
         server = location = dtype = ""
+        deadline = time.monotonic() + timeout
         try:
-            while True:
+            for _ in range(MAX_SSDP_REPLIES):
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    break
+                s.settimeout(left)
                 data, _ = s.recvfrom(4096)
                 h = _parse_ssdp_headers(data)
                 server = server or h.get("server", "")
@@ -136,15 +174,20 @@ def ssdp_discover(timeout: float = 3.0) -> dict:
         s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
         s.settimeout(timeout)
         s.sendto(_ssdp_msearch(_SSDP_MCAST), _SSDP_MCAST)
+        deadline = time.monotonic() + timeout
         try:
-            while True:
+            for _ in range(MAX_SSDP_REPLIES):
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    break
+                s.settimeout(left)
                 data, addr = s.recvfrom(4096)
                 h = _parse_ssdp_headers(data)
                 ip = addr[0]
                 e = found.setdefault(ip, {"server": "", "types": set(), "location": ""})
                 e["server"] = e["server"] or h.get("server", "")
                 e["location"] = e["location"] or h.get("location", "")
-                if h.get("st"):
+                if h.get("st") and len(e["types"]) < MAX_SSDP_TYPES:
                     e["types"].add(h["st"])
         except socket.timeout:
             pass
@@ -216,7 +259,7 @@ def netbios_name(ip: str, timeout: float = 1.5) -> Optional[NetBIOS]:
         num = data[idx]; idx += 1
         nb = NetBIOS()
         for _ in range(num):
-            raw = data[idx:idx+15].decode("ascii", "replace").strip()
+            raw = _safe(data[idx:idx+15].decode("ascii", "replace"), 15)
             suffix = data[idx+15]
             flags = struct.unpack(">H", data[idx+16:idx+18])[0]
             group = bool(flags & 0x8000)
@@ -288,7 +331,7 @@ def snmp_sysdescr(ip: str, community: str = "public", timeout: float = 1.5) -> s
         i += nby
     if ln < 0 or i > len(data):
         return ""
-    return data[i:i + ln].decode("utf-8", "replace").strip()[:200]
+    return _safe(data[i:i + ln].decode("utf-8", "replace"), 200)
 
 
 # --------------------------------------------------------------------------- #
@@ -302,15 +345,27 @@ class Discovery:
     snmp: str = ""
 
 
-def enrich(ip: str, progress=None) -> Discovery:
+def enrich(ip: str, progress=None, stop=None) -> Discovery:
+    """`stop` is an optional threading.Event: three UDP round trips is long
+    enough that a caller who has closed its window wants the rest skipped."""
     def say(m):
         if progress:
             progress(m)
+
+    def stopped():
+        return stop is not None and stop.is_set()
+
     d = Discovery()
+    if stopped():
+        return d
     say("upnp/ssdp")
     d.upnp = ssdp_query(ip)
+    if stopped():
+        return d
     say("netbios")
     d.netbios = netbios_name(ip)
+    if stopped():
+        return d
     say("snmp")
     d.snmp = snmp_sysdescr(ip)
     return d

@@ -23,6 +23,12 @@ KIND_GLYPH = {
 }
 
 
+class _Aborted(BaseException):
+    """Raised out of a progress callback to leave a long recon phase early.
+    Not an Exception subclass on purpose: recon and discover wrap their phases in
+    `except Exception`, which would swallow the abort and let the worker run on."""
+
+
 # --------------------------------------------------------------------------- #
 # List models
 # --------------------------------------------------------------------------- #
@@ -142,6 +148,17 @@ def _copyable(label: Gtk.Label, window: "NetScopeWindow") -> Gtk.Label:
     g.connect("released", lambda *_: window.copy_text(label.get_text()))
     label.add_controller(g)
     return label
+
+
+def _tail_mark(buf: Gtk.TextBuffer) -> Gtk.TextMark:
+    """One reused mark at the end of `buf`. An anonymous mark is owned by the
+    buffer, so creating one per append piles them all up on the insert point and
+    every later insert gets slower."""
+    mark = buf.get_mark("tail")
+    if mark is None:
+        return buf.create_mark("tail", buf.get_end_iter(), False)
+    buf.move_mark(mark, buf.get_end_iter())
+    return mark
 
 
 def _dropdown(items: list[str], width: int, cap: int = 16) -> Gtk.DropDown:
@@ -643,8 +660,7 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         buf = self.log_view.get_buffer()
         stamp = time.strftime("%H:%M:%S")
         buf.insert(buf.get_end_iter(), f"[{stamp}] > {msg}\n")
-        mark = buf.create_mark(None, buf.get_end_iter(), False)
-        self.log_view.scroll_mark_onscreen(mark)
+        self.log_view.scroll_mark_onscreen(_tail_mark(buf))
         # keep the log bounded
         if buf.get_line_count() > 400:
             start = buf.get_start_iter()
@@ -979,7 +995,7 @@ class NetScopeWindow(Gtk.ApplicationWindow):
 
         # record into the persistent inventory and surface what changed
         events = ([] if result.aborted else
-                  store.record_sweep(result.hosts, result.network))
+                  store.record_sweep(result.hosts, result.network, result.iface))
         self._new_ips = {e["ip"] for e in events if e["type"] == store.EV_NEW}
         self._devices = store.load()
         if self._watch_on and events:
@@ -996,7 +1012,11 @@ class NetScopeWindow(Gtk.ApplicationWindow):
             self.host_store.append(row)
         n = len(result.hosts)
         self.host_count.set_text(f"{n} hosts  ·  {result.total_probed} probed  ·  {result.duration:.1f}s")
-        self.set_status(f"{n} hosts on {result.network}")
+        if result.truncated:
+            self.set_status(f"{n} hosts on {result.network} "
+                            f"(first {core.MAX_SWEEP_HOSTS} addresses only)")
+        else:
+            self.set_status(f"{n} hosts on {result.network}")
         named = sum(1 for h in result.hosts if h.hostname or h.mdns)
         self.log(f"sweep {'aborted' if result.aborted else 'complete'}: "
                  f"{n} hosts, {named} named, {result.duration:.1f}s")
@@ -1058,7 +1078,9 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         self._loading_identity = False
         self.ai_btn.set_sensitive(bool(self._ai_backend))
         if not self._ai_backend:
-            self.ai_btn.set_tooltip_text("No AI CLI found (install claude, gemini or codex)")
+            self.ai_btn.set_tooltip_text(
+                "No AI engine found (install claude, gemini or codex, or run ollama serve)"
+            )
         if not self._probing:
             self.port_store.remove_all()
             self.port_count.set_text("")
@@ -1143,7 +1165,13 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         d = self._devices.get(item.key)
         if d is not None and d.name == name and d.trusted == trusted:
             return
-        store.update_device(item.key, name=name, trusted=trusted)
+        if store.update_device(item.key, name=name, trusted=trusted) is None:
+            # no inventory record yet: the sweep that listed this host was stopped
+            # before it was written, so the edit would vanish on the next refresh
+            self.set_status("not saved - run a full scan first")
+            self.log(f"inventory: {item.ip} not saved, no record for it yet "
+                     "(finish a scan without stopping it)")
+            return
         self._devices = store.load()
         item.name = name or item.vendor or item.ip
         self._enrich_row(item)
@@ -1346,7 +1374,7 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         if not self._target_ip:
             return
         if not self._ai_backend:
-            self.log("no AI CLI available (install claude, gemini or codex)")
+            self.log("no AI engine available (install claude/gemini/codex, or run ollama serve)")
             return
         ip = self._target_ip
         host = self._core_host(ip)
@@ -1425,6 +1453,9 @@ class AiScanWindow(Gtk.Window):
         self._buffer_started = False
         self._started = False
         self._cursor_on = True
+        self._closed = False
+        self._blink_source = 0
+        self._run = 0
 
         overlay = Gtk.Overlay()
         self.set_child(overlay)
@@ -1437,7 +1468,7 @@ class AiScanWindow(Gtk.Window):
         keys.connect("key-pressed", self._on_key)
         self.add_controller(keys)
         self.connect("close-request", self._on_close)
-        GLib.timeout_add(530, self._blink)
+        self._arm_blink()
 
     def _build(self) -> Gtk.Widget:
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -1533,10 +1564,25 @@ class AiScanWindow(Gtk.Window):
                 "a local Ollama model keeps everything on this machine.\n\n"
                 "Pick one in the header, then press RERUN. Your choice is remembered.\n")
 
+    def _arm_blink(self) -> None:
+        """Exactly one blink source at a time. A GLib source holds a strong ref to
+        the bound method, so a stacked timer would keep a closed window alive."""
+        self._disarm_blink()
+        self._blink_source = GLib.timeout_add(530, self._blink)
+
+    def _disarm_blink(self) -> None:
+        if self._blink_source:
+            GLib.source_remove(self._blink_source)
+            self._blink_source = 0
+
     def _blink(self) -> bool:
+        if self._closed:
+            self._blink_source = 0
+            return False
         if self._done_flag():
             self.spinner.set_text("●")
             self.spinner.remove_css_class("dim")
+            self._blink_source = 0
             return False
         self._cursor_on = not self._cursor_on
         if self._cursor_on:
@@ -1547,6 +1593,11 @@ class AiScanWindow(Gtk.Window):
 
     def _done_flag(self) -> bool:
         return getattr(self, "_finished", False)
+
+    def _live(self, run: int) -> bool:
+        """A cancelled RERUN and a closed window both leave callbacks queued on the
+        main loop; only the current run may still touch the widgets."""
+        return not self._closed and run == self._run
 
     def start(self) -> None:
         if not self.backend:
@@ -1560,28 +1611,48 @@ class AiScanWindow(Gtk.Window):
         # reset so RERUN works
         self._finished = False
         self._stop = threading.Event()
+        # cancellation is asynchronous, so tag the run and let the callbacks of the
+        # one being replaced fall on the floor instead of reporting on this one
+        self._run += 1
+        run = self._run
         self.stop_btn.set_sensitive(True)
         self.report_view.get_buffer().set_text("")
         self.progress.set_fraction(0)
-        GLib.timeout_add(530, self._blink)
+        self._arm_blink()
         ip, host, hits, backend, stop = self.ip, self.host, self.hits, self.backend, self._stop
 
         def set_status(msg, frac=None):
+            if not self._live(run):
+                return False
             self.status.set_text(msg)
             if frac is not None:
                 self.progress.set_fraction(frac)
             return False
 
+        def begin():
+            return self._begin_report() if self._live(run) else False
+
+        def append(text):
+            return self._append(text) if self._live(run) else False
+
+        def finish(err):
+            return self._finish(err) if self._live(run) else False
+
         if self.mode == "network":
             def net_work():
                 GLib.idle_add(set_status, f"asking {backend}…", 0.6)
-                GLib.idle_add(self._begin_report)
-                ai.investigate_network(
-                    self.devices, self.public,
-                    on_delta=lambda t: GLib.idle_add(self._append, t),
-                    on_done=lambda full, err: GLib.idle_add(self._finish, err),
-                    stop=stop, backend=backend,
-                )
+                GLib.idle_add(begin)
+                try:
+                    ai.investigate_network(
+                        self.devices, self.public,
+                        on_delta=lambda t: GLib.idle_add(append, t),
+                        on_done=lambda full, err: GLib.idle_add(finish, err),
+                        stop=stop, backend=backend,
+                    )
+                except Exception as e:
+                    # the window only leaves "receiving report…" through _finish,
+                    # so an escaping exception would park it there forever
+                    GLib.idle_add(finish, str(e)[:200] or type(e).__name__)
             threading.Thread(target=net_work, daemon=True).start()
             return
 
@@ -1595,16 +1666,24 @@ class AiScanWindow(Gtk.Window):
                     local_hits = []
                 GLib.idle_add(self._parent._probe_cache.__setitem__, ip, list(local_hits))
             if stop.is_set():
-                GLib.idle_add(self._finish, "stopped")
+                GLib.idle_add(finish, "stopped")
                 return
             GLib.idle_add(set_status, "fingerprinting device…", 0.35)
+
+            def fp_progress(msg):
+                # fingerprint takes no stop event, so leave through its own progress
+                # callback rather than run mDNS/upnp/netbios/snmp/http to the end
+                if stop.is_set() or self._closed:
+                    raise _Aborted()
+                GLib.idle_add(set_status, msg, 0.5)
+
             try:
-                dossier = recon.fingerprint(
-                    ip, host, local_hits,
-                    progress=lambda m: GLib.idle_add(set_status, m, 0.5),
-                )
+                dossier = recon.fingerprint(ip, host, local_hits, progress=fp_progress)
+            except _Aborted:
+                GLib.idle_add(finish, "stopped")
+                return
             except Exception as e:
-                GLib.idle_add(self._finish, f"fingerprint failed: {e}")
+                GLib.idle_add(finish, f"fingerprint failed: {e}")
                 return
             # persist the discovered device type on the inventory record
             try:
@@ -1614,17 +1693,22 @@ class AiScanWindow(Gtk.Window):
             except Exception:
                 pass
             if stop.is_set():
-                GLib.idle_add(self._finish, "stopped")
+                GLib.idle_add(finish, "stopped")
                 return
             GLib.idle_add(set_status, f"asking {backend}…", 0.7)
-            GLib.idle_add(self._begin_report)
-            ai.investigate(
-                dossier,
-                on_delta=lambda t: GLib.idle_add(self._append, t),
-                on_done=lambda full, err: GLib.idle_add(self._finish, err),
-                stop=stop,
-                backend=backend,
-            )
+            GLib.idle_add(begin)
+            try:
+                ai.investigate(
+                    dossier,
+                    on_delta=lambda t: GLib.idle_add(append, t),
+                    on_done=lambda full, err: GLib.idle_add(finish, err),
+                    stop=stop,
+                    backend=backend,
+                )
+            except Exception as e:
+                # the window only leaves "receiving report…" through _finish,
+                # so an escaping exception would park it there forever
+                GLib.idle_add(finish, str(e)[:200] or type(e).__name__)
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -1636,17 +1720,32 @@ class AiScanWindow(Gtk.Window):
 
     def _append(self, text: str) -> bool:
         buf = self.report_view.get_buffer()
-        end = buf.get_end_iter()
+        # a stream arrives as many small deltas, so coalesce every run of plain
+        # lines into one insert instead of one insert per line
+        plain: list[str] = []
+
+        def flush():
+            if plain:
+                buf.insert(buf.get_end_iter(), "".join(plain))
+                plain.clear()
+
         # bold an all-caps header line
         for chunk in text.splitlines(keepends=True):
             stripped = chunk.strip()
-            end = buf.get_end_iter()
             if stripped and stripped == stripped.upper() and len(stripped) <= 24 and stripped[0].isalpha():
-                buf.insert_with_tags_by_name(end, chunk, "head")
+                flush()
+                buf.insert_with_tags_by_name(buf.get_end_iter(), chunk, "head")
             else:
-                buf.insert(end, chunk)
-        mark = buf.create_mark(None, buf.get_end_iter(), False)
-        self.report_view.scroll_mark_onscreen(mark)
+                plain.append(chunk)
+        flush()
+        # a sane report is a few hundred lines; the cap is only here so a model
+        # stuck in a loop cannot grow the buffer until the window crawls. Trim
+        # back to the target rather than by a fixed amount, so one oversized
+        # delta cannot leave the buffer above the cap for the rest of the run.
+        if buf.get_line_count() > 4000:
+            buf.delete(buf.get_start_iter(),
+                       buf.get_iter_at_line(buf.get_line_count() - 3500)[1])
+        self.report_view.scroll_mark_onscreen(_tail_mark(buf))
         return False
 
     def _finish(self, err: str) -> bool:
@@ -1688,6 +1787,12 @@ class AiScanWindow(Gtk.Window):
         return False
 
     def _on_close(self, *_):
+        # the worker can outlive the window (recon phases are not interruptible
+        # mid-call), so retire the timer and make every queued callback a no-op
+        # rather than let it write into a destroyed widget tree
+        self._closed = True
+        self._run += 1
+        self._disarm_blink()
         self._stop.set()
         if self in self._parent._ai_windows:
             self._parent._ai_windows.remove(self)

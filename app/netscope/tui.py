@@ -15,7 +15,7 @@ import ipaddress
 import threading
 import time
 
-from . import core, store, assess
+from . import core, store, assess, notify
 
 
 class TuiState:
@@ -31,6 +31,7 @@ class TuiState:
         self.probe_ip = ""
         self.risk = None
         self.watch = False
+        self.alerts: list[str] = []
         self.lock = threading.Lock()
 
 
@@ -53,7 +54,8 @@ def _sweep(st: TuiState):
     st.status = f"sweeping {net}…"
     try:
         result = core.sweep(net, iface)
-        store.record_sweep(result.hosts, result.network)
+        events = store.record_sweep(result.hosts, result.network, result.iface)
+        _alert(st, events)
         devices = store.load()
         with st.lock:
             st.hosts = result.hosts
@@ -63,7 +65,8 @@ def _sweep(st: TuiState):
                 h._trusted = bool(d and d.trusted)
                 h._risk = d.risk if d and d.risk >= 0 else -1
                 h._name = (d.name if d else "") or h.hostname or h.mdns
-        st.status = f"{len(result.hosts)} hosts on {net} · {result.duration:.1f}s"
+        cut = f" · first {core.MAX_SWEEP_HOSTS} only" if result.truncated else ""
+        st.status = f"{len(result.hosts)} hosts on {net} · {result.duration:.1f}s{cut}"
     except Exception as e:
         st.status = f"sweep failed: {e}"
     finally:
@@ -76,7 +79,8 @@ def _probe(st: TuiState, ip: str, mac: str):
     st.status = f"probing {ip}…"
     try:
         hits = core.probe(ip, core.profile_ports("quick"))
-        store.record_probe(ip, mac, hits)
+        _alert(st, store.record_probe(ip, mac, hits,
+                                      scanned_ports=core.profile_ports("quick")))
         findings, score, lvl = assess.assess(hits)
         store.update_device(store.device_key(mac, ip), risk=score)
         with st.lock:
@@ -87,6 +91,21 @@ def _probe(st: TuiState, ip: str, mac: str):
         st.status = f"probe failed: {e}"
     finally:
         st.probing = False
+
+
+def _alert(st: TuiState, events: list) -> None:
+    """Watch mode is only useful if it says something. Fire the same desktop
+    notifications the GUI and the headless watcher do, but only while watching:
+    a one-off sweep is the user looking at the screen already, and on a fresh
+    inventory every device on the network is new at once."""
+    if not events:
+        return
+    if st.watch:
+        notify.notify_events(events)
+    with st.lock:
+        for ev in events:
+            st.alerts.append(notify.summary(ev))
+        del st.alerts[:-8]
 
 
 def _bg(fn, *a):
@@ -131,6 +150,13 @@ def _draw(scr, st: TuiState):
         p = st.public
         put(y, 1, p.get("ipv4") or p.get("error") or "-", 2, True); y += 1
         put(y, 1, f"{p.get('org','')}  {p.get('city','')} {p.get('country','')}", 3); y += 1
+    with st.lock:
+        alerts = list(st.alerts)
+    if alerts:
+        y += 1
+        put(y, 0, f"ALERTS ({len(alerts)})", 1, True); y += 1
+        for line in alerts[-5:]:
+            put(y, 1, line, 2); y += 1
 
     # host list (right of a divider)
     lx = 40 if w > 90 else 0

@@ -1,3 +1,8 @@
 #!/bin/bash
 # NetScope launcher - developed for and by frig
-exec python3 "$HOME/.config/omarchy/plugins/io.github.frigstah.netscope/app/netscope.py" "$@"
+# Resolved from this script's own location, following the symlink install.sh
+# drops in ~/.local/bin, so a checkout outside ~/.config runs its own code.
+SELF=$(readlink -f "$0" 2>/dev/null) || SELF="$0"
+APP="$(cd "$(dirname "$SELF")/.." 2>/dev/null && pwd)/app/netscope.py"
+[ -f "$APP" ] || APP="$HOME/.config/omarchy/plugins/io.github.frigstah.netscope/app/netscope.py"
+exec python3 "$APP" "$@"

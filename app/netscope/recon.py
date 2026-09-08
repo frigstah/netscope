@@ -16,6 +16,25 @@ from . import assess as _assess
 from . import discover as _discover
 
 
+def ev(value, cap: int = 160) -> str:
+    """Every string below is chosen by the device being scanned and ends up in
+    a terminal, a report and an AI prompt. Drop anything unprintable, which
+    covers ANSI escapes and also the invisible characters a control-character
+    class misses (U+202E right-to-left override, zero-width spaces), flatten
+    newlines so a device cannot forge report sections or inject instructions,
+    and cap the length so it cannot flood the prompt."""
+    t = "".join(c if c.isprintable() else " " for c in str(value or ""))
+    t = re.sub(r"\s+", " ", t).strip()
+    return (t[: cap - 1] + "\u2026") if len(t) > cap else t
+
+
+# ev() bounds each field, but a single device can advertise thousands of mDNS
+# services or hold thousands of ports open, and the briefing is billed per
+# token, so the counts are bounded too.
+_MAX_MDNS = 40
+_MAX_PORTS = 64
+
+
 # TTL -> OS family. Hops lower the observed value, so we snap up to the
 # nearest common initial TTL.
 def _os_from_ttl(ttl: int) -> str:
@@ -43,6 +62,8 @@ class MdnsService:
     service: str
     port: str = ""
     txt: str = ""
+    instance: str = ""
+    stype: str = ""
 
 
 def _mdns_services(ip: str, timeout: float = 6.0) -> list[MdnsService]:
@@ -62,14 +83,21 @@ def _mdns_services(ip: str, timeout: float = 6.0) -> list[MdnsService]:
             continue
         if parts[7] != ip:
             continue
-        name = _unescape(parts[4] if len(parts) > 4 else "")
-        typ = parts[5] if len(parts) > 5 else ""
-        port = parts[8] if len(parts) > 8 else ""
-        txt = _unescape(parts[9]) if len(parts) > 9 else ""
-        label = name or typ
-        key = (label, port)
+        instance = ev(_unescape(parts[3] if len(parts) > 3 else ""), 48)
+        typ = ev(parts[4] if len(parts) > 4 else "", 48)
+        port = ev(parts[8] if len(parts) > 8 else "", 8)
+        txt = ev(_unescape(parts[9]) if len(parts) > 9 else "", 160)
+        # the instance name ("Living Room Camera") is the most identifying
+        # string a device advertises, so it travels next to the service type
+        # instead of being dropped, and two instances of one type no longer
+        # collapse into each other
+        label = f"{instance} ({typ})" if instance and typ else (instance or typ)
+        key = (instance, typ, port)
         if key not in services:
-            services[key] = MdnsService(service=label, port=port, txt=txt[:200])
+            services[key] = MdnsService(service=label, port=port, txt=txt,
+                                        instance=instance, stype=typ)
+            if len(services) >= _MAX_MDNS:
+                break
     return list(services.values())
 
 
@@ -198,7 +226,10 @@ def guess_type(d: "Dossier") -> str:
     up = up.upnp if up else None
     utype = (up.device_type or "").lower() if up else ""
     umodel = (up.model or "").lower() if up else ""
-    services = " ".join(getattr(s, "service", "") for s in (d.services or [])).lower()
+    # the DNS-SD type only, never the device-chosen instance name: the rules
+    # below match short substrings, so "Philipp's MacBook" would read as a
+    # printer ("ipp") and "Podcast Archive" as a media box ("cast")
+    services = " ".join(getattr(s, "stype", "") for s in (d.services or [])).lower()
     hay = f"{vendor} {umodel} {services} {d.hostname or ''}".lower()
 
     file_ports = ports & {445, 139, 2049, 548}
@@ -212,7 +243,10 @@ def guess_type(d: "Dossier") -> str:
         return "media / streaming device"
     if is_camera_vendor or ((ports & {554} or "rtsp" in services) and not file_ports):
         return "camera"
-    if ports & {9100, 515, 631} or "printer" in hay or "ipp" in services:
+    # 9100/515 are print-only; 631 (CUPS) also runs on ordinary desktops, so it
+    # only counts with corroboration
+    if (ports & {9100, 515} or "printer" in hay or "ipp" in services
+            or (631 in ports and ("print" in hay or not (ports - {631, 22, 5353})))):
         return "printer"
     if "proxmox" in vendor:
         return "VM / container"
@@ -246,11 +280,11 @@ def build_prompt(d: Dossier) -> str:
     if d.mac:
         lines.append(f"MAC: {d.mac}")
     if d.vendor:
-        lines.append(f"MAC vendor (OUI): {d.vendor}")
+        lines.append(f"MAC vendor (OUI): {ev(d.vendor, 80)}")
     if d.hostname:
-        lines.append(f"Reverse-DNS hostname: {d.hostname}")
+        lines.append(f"Reverse-DNS hostname: {ev(d.hostname, 80)}")
     if d.mdns and d.mdns != d.hostname:
-        lines.append(f"mDNS hostname: {d.mdns}")
+        lines.append(f"mDNS hostname: {ev(d.mdns, 80)}")
     if d.rtt_ms >= 0:
         lines.append(f"Ping latency: {d.rtt_ms:.1f} ms")
     if d.ttl:
@@ -259,18 +293,22 @@ def build_prompt(d: Dossier) -> str:
     if d.services:
         lines.append("")
         lines.append("Advertised mDNS / Bonjour services:")
-        for s in d.services:
+        for s in d.services[:_MAX_MDNS]:
             extra = f"  port {s.port}" if s.port and s.port != "0" else ""
-            txt = f"  TXT[{s.txt}]" if s.txt else ""
-            lines.append(f"  - {s.service}{extra}{txt}")
+            txt = f"  TXT[{ev(s.txt, 120)}]" if s.txt else ""
+            lines.append(f"  - {ev(s.service, 100)}{extra}{txt}")
+        if len(d.services) > _MAX_MDNS:
+            lines.append(f"  - ... {len(d.services) - _MAX_MDNS} further services advertised, not listed")
 
     if d.ports:
         lines.append("")
         lines.append("Open TCP ports (from a direct connect scan):")
-        for h in d.ports:
-            banner = f"  banner: {h.banner}" if h.banner else ""
-            svc = h.service or "unknown"
+        for h in d.ports[:_MAX_PORTS]:
+            banner = f"  banner: {ev(h.banner, 120)}" if h.banner else ""
+            svc = ev(h.service, 40) or "unknown"
             lines.append(f"  - {h.port}/tcp  {svc}{banner}")
+        if len(d.ports) > _MAX_PORTS:
+            lines.append(f"  - ... {len(d.ports) - _MAX_PORTS} further open ports, not listed")
     else:
         lines.append("")
         lines.append("Open TCP ports: none found in the scanned range (device may filter or expose none).")
@@ -281,13 +319,13 @@ def build_prompt(d: Dossier) -> str:
         for w in d.https:
             bits = [f"{w.scheme}://{d.ip}:{w.port}/"]
             if w.status:
-                bits.append(f"status {w.status}")
+                bits.append(f"status {ev(w.status, 40)}")
             if w.server:
-                bits.append(f"Server: {w.server}")
+                bits.append(f"Server: {ev(w.server, 80)}")
             if w.title:
-                bits.append(f"title: {w.title}")
+                bits.append(f"title: {ev(w.title, 100)}")
             if w.auth:
-                bits.append(f"auth: {w.auth}")
+                bits.append(f"auth: {ev(w.auth, 60)}")
             lines.append("  - " + "  |  ".join(bits))
 
     disc = getattr(d, "discovery", None)
@@ -297,16 +335,16 @@ def build_prompt(d: Dossier) -> str:
         if up:
             bits = [x for x in (up.friendly_name, up.model, up.manufacturer) if x]
             if bits:
-                extra.append("UPnP: " + " / ".join(bits))
+                extra.append("UPnP: " + ev(" / ".join(bits), 160))
             if up.device_type:
-                extra.append("UPnP deviceType: " + up.device_type)
+                extra.append("UPnP deviceType: " + ev(up.device_type, 100))
             if up.server:
-                extra.append("UPnP server: " + up.server)
+                extra.append("UPnP server: " + ev(up.server, 100))
         if nb and (nb.name or nb.workgroup):
-            extra.append(f"NetBIOS: {nb.name}" + (f" (workgroup {nb.workgroup})" if nb.workgroup else "")
+            extra.append(f"NetBIOS: {ev(nb.name, 40)}" + (f" (workgroup {ev(nb.workgroup, 40)})" if nb.workgroup else "")
                          + (" [server]" if nb.is_server else ""))
         if snmp:
-            extra.append("SNMP sysDescr: " + snmp)
+            extra.append("SNMP sysDescr: " + ev(snmp, 200))
         if extra:
             lines.append("")
             lines.append("Active discovery:")
@@ -396,8 +434,9 @@ def build_network_prompt(devices: list, public: dict) -> str:
     lines = []
     pub = public or {}
     if pub.get("ipv4"):
-        loc = ", ".join(x for x in (pub.get("city"), pub.get("country")) if x)
-        lines.append(f"Public: {pub['ipv4']} ({pub.get('org','')}{' · ' + loc if loc else ''})")
+        # the address, ISP and city identify the owner, not the network's
+        # security posture, and this prompt is what leaves for a cloud engine
+        lines.append("Public connectivity: present (address withheld).")
     present = [d for d in devices if g(d, "present", True)]
     lines.append(f"{len(present)} devices present ({len(devices)} known total).")
     lines.append("")
@@ -413,8 +452,8 @@ def build_network_prompt(devices: list, public: dict) -> str:
                  else ("T" if g(d, "trusted", False) else "U")),
             "R" if g(d, "randomized", False) else "",
         ])
-        name = g(d, "name") or g(d, "hostname") or ""
-        vendor = g(d, "vendor", "")
+        name = ev(g(d, "name") or g(d, "hostname") or "", 48)
+        vendor = ev(g(d, "vendor", ""), 48)
         ip = g(d, "ip", "")
         risk = g(d, "risk", -1)
         ports = g(d, "ports", {}) or {}

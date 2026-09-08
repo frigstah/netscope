@@ -1,6 +1,6 @@
 """NetScope core: interfaces, public IP, LAN sweep, port probing.
 
-Pure standard library + a few Linux tools (ip, ping, avahi-resolve, curl).
+Pure standard library + a few Linux tools (ip, ping, getent, avahi-resolve, curl).
 No root required. Developed for and by frig.
 """
 
@@ -24,7 +24,7 @@ from typing import Callable, Iterable, Optional
 APP_NAME = "NetScope"
 APP_ID = "io.github.frigstah.netscope"
 TAGLINE = "developed for and by frig"
-VERSION = "1.7.0"
+VERSION = "1.8.0"
 
 CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "netscope"
 LAST_SCAN_FILE = CACHE_DIR / "last-scan.json"
@@ -509,6 +509,7 @@ class ScanResult:
     hosts: list[Host]
     total_probed: int
     aborted: bool = False
+    truncated: bool = False
 
     def to_json(self) -> dict:
         d = asdict(self)
@@ -550,16 +551,23 @@ def neighbours(dev: str = "") -> dict[str, dict]:
 
 
 def _rdns(ip: str) -> str:
-    try:
-        return socket.gethostbyaddr(ip)[0]
-    except (socket.herror, socket.gaierror, OSError):
-        return ""
+    # gethostbyaddr takes no timeout and ignores setdefaulttimeout, so a
+    # blackholed nameserver pins the worker for the whole libc resolver budget
+    # (timeout x attempts x nameservers); getent walks the same NSS stack in a
+    # process we can kill
+    out = _run(["getent", "hosts", ip], timeout=2.0)
+    parts = out.split()
+    # the name is chosen by the far end and lands in a terminal (cli.py prints
+    # Host.label), so it gets the same control-byte treatment as a banner
+    return _printable(parts[1]) if len(parts) >= 2 else ""
 
 
 def _mdns(ip: str) -> str:
     out = _run(["avahi-resolve", "-a", ip], timeout=1.5)
     parts = out.split()
-    return parts[1] if len(parts) >= 2 else ""
+    # avahi escapes only "." and "\" in a label, so ANSI escapes in an
+    # advertised hostname would reach the terminal untouched
+    return _printable(parts[1]) if len(parts) >= 2 else ""
 
 
 def local_addresses() -> set[str]:
@@ -578,7 +586,11 @@ def sweep(
     net = ipaddress.ip_network(network, strict=False)
     if net.version != 4:
         raise ValueError("only IPv4 networks are swept")
-    targets = [str(h) for h in islice(net.hosts(), MAX_SWEEP_HOSTS)]
+    # take one past the cap so truncation is exact for /31 and /32 too, where
+    # hosts() keeps the network and broadcast addresses
+    targets = [str(h) for h in islice(net.hosts(), MAX_SWEEP_HOSTS + 1)]
+    truncated = len(targets) > MAX_SWEEP_HOSTS
+    del targets[MAX_SWEEP_HOSTS:]
 
     started = time.time()
     mine = local_addresses()
@@ -636,6 +648,9 @@ def sweep(
                 jobs[pool.submit(_rdns, h.ip)] = (h, "hostname")
                 jobs[pool.submit(_mdns, h.ip)] = (h, "mdns")
             for fut in as_completed(jobs):
+                if stop and stop.is_set():
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    break
                 h, attr = jobs[fut]
                 try:
                     val = fut.result()
@@ -654,7 +669,7 @@ def sweep(
     result = ScanResult(
         network=str(net), iface=iface, started_at=started,
         duration=time.time() - started, hosts=hosts, total_probed=total,
-        aborted=bool(stop and stop.is_set()),
+        aborted=bool(stop and stop.is_set()), truncated=truncated,
     )
     try:
         if not result.aborted:
@@ -791,17 +806,22 @@ async def _probe_one(ip: str, port: int, sem: asyncio.Semaphore, grab: bool) -> 
         return hit
 
 
+def _printable(s: str) -> str:
+    """A banner is attacker-controlled and gets printed to a terminal, so no
+    control bytes (ANSI escapes, BEL, ...) may survive."""
+    return "".join(c if c.isprintable() else "." for c in s)
+
+
 def _clean_banner(data: bytes) -> str:
     text = data.decode("utf-8", errors="replace")
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     if not lines:
         return ""
-    # prefer a Server: header for HTTP, else first line
+    # prefer a Server: header for HTTP, else first line - both sanitized
     for l in lines:
         if l.lower().startswith("server:"):
-            return l[7:].strip()[:80]
-    first = lines[0]
-    return "".join(c if c.isprintable() else "." for c in first)[:80]
+            return _printable(l[7:].strip())[:80]
+    return _printable(lines[0])[:80]
 
 
 async def _probe_all(ip: str, ports: list[int], progress: ProgressCb, grab: bool,

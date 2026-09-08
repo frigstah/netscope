@@ -128,6 +128,7 @@ class Device:
     ports_at: float = 0.0
     risk: int = -1                              # last assessment score, -1 = never assessed
     dtype: str = ""                             # discovered device type
+    seen_on: str = ""                           # interface it was discovered on
 
     @property
     def display_name(self) -> str:
@@ -171,10 +172,59 @@ def load() -> dict[str, Device]:
         if not isinstance(d, dict):
             continue
         try:
-            fields = {k: d[k] for k in d if k in Device.__dataclass_fields__}
-            fields["key"] = key
+            fields = _coerce({k: d[k] for k in d if k in Device.__dataclass_fields__})
+            fields["key"] = str(key)
             out[key] = Device(**fields)
-        except (TypeError, KeyError, ValueError):
+        except (TypeError, KeyError, ValueError, OverflowError):
+            continue
+    return out
+
+
+_TYPES = {
+    "key": str, "mac": str, "name": str, "trusted": bool, "tags": list, "notes": str,
+    "vendor": str, "hostname": str, "ip": str, "first_seen": float, "last_seen": float,
+    "present": bool, "missed": int, "randomized": bool, "is_self": bool,
+    "is_gateway": bool, "ports": dict, "ports_at": float, "risk": int, "dtype": str,
+    "seen_on": str,
+}
+
+# year 5138, far past any real last_seen and far short of what time_t rejects
+_MAX_TS = 1e11
+
+
+def _coerce(fields: dict) -> dict:
+    """A dataclass does not enforce its annotations, so a hand-edited or
+    corrupted record ("risk": "high", ports as a list) would sail through load()
+    and only explode later while rendering a report. Cast here, drop what cannot
+    be cast, and let the field default apply."""
+    out = {}
+    for k, v in fields.items():
+        want = _TYPES.get(k)
+        if want is None:
+            continue
+        try:
+            if want is bool:
+                out[k] = bool(v) if isinstance(v, (bool, int, float)) else str(v).lower() == "true"
+            elif want is int:
+                out[k] = int(float(v))
+            elif want is float:
+                # every float field is a timestamp, and time.localtime() raises
+                # on inf/NaN and on anything past time_t, so a value a report
+                # could never render is worth less than the field default (the
+                # comparison is False for NaN and inf, which is the point)
+                f = float(v)
+                out[k] = f if -_MAX_TS < f < _MAX_TS else 0.0
+            elif want is str:
+                out[k] = v if isinstance(v, str) else ("" if v is None else str(v))
+            elif want is list:
+                out[k] = list(v) if isinstance(v, (list, tuple)) else []
+            elif want is dict:
+                out[k] = {str(a): ("" if b is None else str(b))
+                          for a, b in v.items()} if isinstance(v, dict) else {}
+        # json.loads accepts Infinity/NaN and unbounded integer literals, and
+        # int(inf) / float(huge int) raise OverflowError, not ValueError - one
+        # such number would otherwise take down every caller of load()
+        except (TypeError, ValueError, OverflowError):
             continue
     return out
 
@@ -272,7 +322,7 @@ def _ev(kind: str, dev: Device, detail: str = "") -> dict:
 # --------------------------------------------------------------------------- #
 
 @_transaction
-def record_sweep(hosts: list, network: str = "") -> list[dict]:
+def record_sweep(hosts: list, network: str = "", iface: str = "") -> list[dict]:
     """Update the inventory from a sweep's hosts (core.Host). Returns the
     change events (empty on the very first sweep, which just seeds a baseline)."""
     # Only age devices whose IPv4 addresses were actually in this sweep.
@@ -287,31 +337,36 @@ def record_sweep(hosts: list, network: str = "") -> list[dict]:
     events: list[dict] = []
 
     for h in hosts:
-        key = device_key(h.mac, h.ip)
+        key = _resolve_key(devices, h)
         if h.mac:
             _absorb_ip_record(devices, key, h.ip)
         present.add(key)
         d = devices.get(key)
-        if d is None:
+        fresh = d is None
+        if fresh:
             d = Device(key=key, mac=h.mac, first_seen=now,
                        is_self=h.is_self, is_gateway=h.is_gateway,
                        trusted=h.is_self, randomized=is_randomized_mac(h.mac))
             devices[key] = d
-            if not first_run:
-                events.append(_ev(EV_NEW, _fill(d, h)))
-        else:
-            was_gone = not d.present
-            _fill(d, h)
-            if was_gone and not first_run:
-                events.append(_ev(EV_BACK, d))
+        was_gone = not fresh and not d.present
         _fill(d, h)
+        if not first_run:
+            if fresh:
+                events.append(_ev(EV_NEW, d))
+            elif was_gone:
+                events.append(_ev(EV_BACK, d))
         d.last_seen = now
         d.present = True
         d.missed = 0
 
     for key, d in devices.items():
-        # a sweep also runs IPv6 neighbour discovery, so v6 devices are in scope
-        in_scope = (d.ip in scanned) or (bool(scanned) and ":" in (d.ip or ""))
+        # Only age what this sweep could actually have seen: the v4 range it
+        # covered, plus v6 devices discovered on the same interface (a sweep
+        # also runs IPv6 neighbour discovery on that link).
+        if ":" in (d.ip or ""):
+            in_scope = bool(scanned) and bool(iface) and d.seen_on == iface
+        else:
+            in_scope = d.ip in scanned
         if key in present or not d.present or not in_scope:
             continue
         d.missed += 1
@@ -328,6 +383,19 @@ def record_sweep(hosts: list, network: str = "") -> list[dict]:
 
 
 _CARRY = ("name", "trusted", "tags", "notes", "ports", "ports_at", "risk", "dtype")
+
+
+def _resolve_key(devices: dict, h) -> str:
+    """Key by MAC when we have one. When we do not (the host answered ICMP but
+    has no neighbour-table entry this round) reuse the MAC-keyed record that
+    already owns this IP, instead of forking a second `ip:` record that would
+    fire device_new / device_gone for one physical device."""
+    if h.mac:
+        return device_key(h.mac, h.ip)
+    for key, d in devices.items():
+        if d.ip == h.ip and not key.startswith("ip:"):
+            return key
+    return device_key("", h.ip)
 
 
 def _absorb_ip_record(devices: dict, mac_key: str, ip: str) -> None:
@@ -361,6 +429,8 @@ def _fill(d: Device, h) -> Device:
         d.hostname = name
     d.is_self = d.is_self or h.is_self
     d.is_gateway = d.is_gateway or h.is_gateway
+    if getattr(h, "iface", ""):
+        d.seen_on = h.iface
     if h.mac:
         d.randomized = is_randomized_mac(h.mac)
     return d
@@ -383,7 +453,7 @@ def record_probe(ip: str, mac: str, hits: list, scanned_ports=None) -> list[dict
         for p, svc in found.items():
             if p not in d.ports:
                 events.append(_ev(EV_PORT_NEW, d, f"{p}/tcp {svc}".strip()))
-    if scanned_ports:
+    if scanned_ports is not None:
         covered = {str(p) for p in scanned_ports}
         kept = {p: svc for p, svc in (d.ports or {}).items() if p not in covered}
         kept.update(found)

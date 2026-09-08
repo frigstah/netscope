@@ -17,16 +17,23 @@ missing=()
 for dep in python3 ip ping curl; do
   command -v "$dep" >/dev/null || missing+=("$dep")
 done
-python3 -c 'import gi; gi.require_version("Gtk","4.0"); gi.require_version("Adw","1"); from gi.repository import Gtk, Adw' 2>/dev/null \
-  || missing+=("python-gobject + gtk4 + libadwaita")
 if ((${#missing[@]})); then
   echo "install.sh: missing dependencies: ${missing[*]}" >&2
-  echo "  install with: omarchy pkg add python-gobject gtk4 libadwaita" >&2
   exit 1
 fi
+# Only the window needs the toolkit, so this is a note and not a failure: the
+# command line, `netscope --tui` and the watcher install and run without it.
+if ! python3 -c 'import gi; gi.require_version("Gtk","4.0"); gi.require_version("Adw","1"); from gi.repository import Gtk, Adw; raise SystemExit(0 if (Gtk.get_major_version(), Gtk.get_minor_version()) >= (4, 12) else 1)' 2>/dev/null; then
+  echo "note: python-gobject, gtk4 4.12+ and libadwaita not available - the NetScope window needs them"
+  echo "  install with: omarchy pkg add python-gobject gtk4 libadwaita"
+  echo "  the command line, 'netscope --tui' and the watcher work without them"
+fi
+python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' \
+  || echo "note: python3 is older than 3.11 - the window needs 3.11+; the command line and 'netscope --tui' do not"
 command -v avahi-resolve >/dev/null || echo "note: avahi not found - mDNS names will be skipped (optional)"
 command -v claude >/dev/null || command -v gemini >/dev/null || command -v codex >/dev/null \
-  || echo "note: no AI CLI found (claude/gemini/codex) - the AI SCAN button stays disabled (optional)"
+  || curl -sf -m 2 -o /dev/null "${NETSCOPE_OLLAMA_HOST:-http://localhost:11434}/api/tags" \
+  || echo "note: no AI engine found - AI SCAN needs claude, gemini or codex, or a local 'ollama serve' (optional)"
 
 # --- link the CLI ---------------------------------------------------------- #
 mkdir -p "$HOME/.local/bin"
@@ -52,10 +59,12 @@ for a in "${@:-}"; do
   [ "$a" = "--watch" ] && watch=1
 done
 if [ "$enable" = 1 ]; then
-  omarchy plugin enable io.github.frigstah.netscope right 2>/dev/null \
-    || omarchy bar put io.github.frigstah.netscope --section right 2>/dev/null \
-    || echo "note: could not auto-place the widget; add it with: omarchy bar put io.github.frigstah.netscope --section right"
-  echo "==> added the NetScope bar widget"
+  if omarchy plugin enable io.github.frigstah.netscope right 2>/dev/null \
+    || omarchy bar put io.github.frigstah.netscope --section right 2>/dev/null; then
+    echo "==> added the NetScope bar widget"
+  else
+    echo "note: could not auto-place the widget; add it with: omarchy bar put io.github.frigstah.netscope --section right"
+  fi
 fi
 
 # --- optional: background watcher (systemd --user) ------------------------- #

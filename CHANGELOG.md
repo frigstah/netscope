@@ -2,6 +2,69 @@
 
 Notable changes, newest first.
 
+## [1.8.0] - 2026-09-08
+
+A second audit pass. Every fix below was reproduced before and after.
+
+### Security and privacy
+- The whole-network AI briefing no longer carries your public IP, ISP or city.
+  It states that public connectivity exists and withholds the address.
+- Untrusted device text is filtered on what is printable rather than on a
+  control-character range, so an invisible right-to-left override or a
+  zero-width space in a device name can no longer reach your terminal, a report
+  or an AI prompt. Ordinary Unicode names are untouched.
+- SSDP, NetBIOS and SNMP replies are length-capped and stripped at the source,
+  and SSDP has an overall deadline so a chatty device cannot pin a worker.
+- `--sanitized` also masks the interface a device was seen on.
+
+### Added
+- `NETSCOPE_NOTIFY=0` mutes desktop alerts for a run. Worth setting when you
+  script `--scan` in a loop or point NetScope at a fresh state directory, since
+  an empty inventory makes every device on the network look new at once.
+- A sweep that hits the address cap now says so, in the window, the CLI and the
+  TUI. Devices past the cap are never contacted, so a partial sweep is not a
+  clean bill of health.
+- Watch mode in the TUI actually alerts: desktop notifications plus an on-screen
+  ALERTS panel for when there is no notification daemon.
+
+### Fixed
+- An AI investigation could hang forever on "fingerprinting device": the abort
+  path raised an exception class that was never defined, which killed the worker
+  thread silently and left the window waiting.
+- Closing the AI window left its blink timer running and its fingerprint worker
+  driving a destroyed window.
+- Every log line and AI stream chunk leaked a GtkTextMark, and the report buffer
+  had no ceiling, so a long investigation slowed the window down without bound.
+- A device that answers ping but has no ARP entry no longer splits into a second
+  inventory record, which used to fire new / gone / back for one device and
+  orphan the name and trust you had set.
+- IPv6 devices are aged only by a sweep on the interface they were seen on, so
+  sweeping one network no longer reports v6 devices on another as departed.
+- Probing with an empty port list no longer wipes a device's known ports.
+- A corrupt or hand-edited inventory is coerced to the right field types on
+  load instead of failing later while rendering a report.
+- The TUI notified on every sweep and probe rather than only while watching.
+- Notification counts no longer include alerts the daemon rejected.
+- AI engines are cleaned up with the temporary directory they were given, and
+  leftover helper processes are killed by verified group membership rather than
+  by signalling a group id that may no longer be ours.
+- `--scan` and `--watch` reject a bad or IPv6 CIDR cleanly instead of raising;
+  `--assess` refuses an empty port spec instead of reporting "clean"; an empty
+  option value is a usage error rather than a silent GUI launch; `--identify`
+  stores the device type it worked out.
+- The UPnP rule no longer fires on TCP 5000 / 49152 / 49153, which the same
+  code classifies as HTTP, and no longer reports port 0.
+- `bin/netscope` resolves the app from its own location, so the symlink
+  `install.sh` creates runs the checkout it belongs to.
+
+### Changed
+- Requirements corrected to Python 3.11+ and GTK 4.12+, which is what the code
+  has always needed (`tomllib`, `ColumnView.scroll_to`).
+- `install.sh` warns instead of failing when the GTK stack is absent, since the
+  CLI, `--tui` and the watcher do not need it, and it no longer claims AI SCAN
+  needs a cloud CLI when a local Ollama will do.
+- Uninstall instructions cover the installed icon and the cache directory.
+
 ## [1.7.0] - 2026-09-08
 
 Security, privacy and correctness pass ahead of a public release.

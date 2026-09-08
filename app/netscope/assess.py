@@ -10,6 +10,7 @@ extra HTTP/auth signal.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, asdict
 from typing import Optional
 
@@ -82,6 +83,17 @@ _MGMT = {
 _HTTP_ADMIN_HINTS = ("login", "sign in", "admin", "router", "setup", "dashboard",
                      "management", "console", "portal", "unifi", "webui")
 
+_CTRL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def _clean(value, cap: int = 80) -> str:
+    """A finding detail is printed to a terminal, shown in a GTK label and
+    pasted into an AI prompt, so any part of it the scanned device chose has to
+    lose its control characters, newlines and length first."""
+    t = _CTRL.sub(" ", str(value or ""))
+    t = re.sub(r"\s+", " ", t).strip()
+    return (t[: cap - 1] + "…") if len(t) > cap else t
+
 
 def _is_https_port(port: int, service: str) -> bool:
     return port in (443, 8443, 4443, 9443, 8444, 7443, 5986, 8883, 2376) or "https" in service or "tls" in service
@@ -110,13 +122,13 @@ def assess(hits: list, dossier: Optional["object"] = None) -> tuple[list, int, s
     https_seen = any(_is_https_port(p, svc.get(p, "")) for p in open_ports)
     if dossier is not None:
         for w in getattr(dossier, "https", []) or []:
-            title = (getattr(w, "title", "") or "").lower()
-            looks_admin = any(h in title for h in _HTTP_ADMIN_HINTS)
+            title = _clean(getattr(w, "title", ""))
+            looks_admin = any(h in title.lower() for h in _HTTP_ADMIN_HINTS)
             if getattr(w, "scheme", "") == "http" and (looks_admin or getattr(w, "auth", "")):
                 findings.append(Finding(
                     "medium", "Admin page over plaintext HTTP",
                     f"{w.scheme}://:{w.port} serves a login/management page without TLS"
-                    + (f" ({w.title})" if getattr(w, 'title', '') else ""),
+                    + (f" ({title})" if title else ""),
                     w.port))
             if getattr(w, "auth", "").lower().startswith("basic"):
                 findings.append(Finding(
@@ -129,11 +141,29 @@ def assess(hits: list, dossier: Optional["object"] = None) -> tuple[list, int, s
         findings.append(Finding("low", "Plaintext HTTP service",
                                 "port 80 is open with no HTTPS seen; if it's an admin UI, logins are unencrypted", 80))
 
-    # UPnP / SSDP exposure
-    if open_ports & {1900, 49152, 49153, 5000}:
+    # UPnP / SSDP exposure. SSDP is UDP/1900 and probing here is TCP-connect
+    # only, so an open port is never evidence of UPnP: 5000/49152/49153 are in
+    # core.HTTP_PORTS and answer as ordinary web servers. Only a device that
+    # answered M-SEARCH or named UPnP in a Server header counts, and the port
+    # is whichever TCP port said so, never a guess.
+    upnp_port = 0
+    for h in hits:
+        if "upnp" in (getattr(h, "banner", "") or "").lower():
+            upnp_port = h.port
+            break
+    upnp_seen = upnp_port > 0
+    if dossier is not None:
+        upnp_seen = upnp_seen or bool(getattr(getattr(dossier, "discovery", None), "upnp", None))
+        for w in getattr(dossier, "https", []) or []:
+            if "upnp" in (getattr(w, "server", "") or "").lower():
+                upnp_seen = True
+                upnp_port = upnp_port or w.port
+    if upnp_seen:
+        where = (f"TCP port {upnp_port} identifies itself as UPnP" if upnp_port
+                 else "the device answered an SSDP M-SEARCH on UDP 1900")
         findings.append(Finding("low", "UPnP/SSDP surface",
-                                "UPnP is exposed; on a router it can let devices open ports to the internet automatically",
-                                1900 if 1900 in open_ports else 0))
+                                f"{where}; on a router UPnP can let devices open ports to the "
+                                "internet automatically", upnp_port))
 
     # a large number of open ports is itself notable
     if len(open_ports) >= 15:

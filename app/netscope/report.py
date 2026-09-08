@@ -57,9 +57,20 @@ def _mask_mac(mac: str) -> str:
     return ":".join(parts[:3] + ["xx"] * (len(parts) - 3)) if len(parts) == 6 else mac
 
 
+def _mask_key(key: str) -> str:
+    """A device key is either the raw MAC or 'ip:<addr>' - both identify."""
+    k = str(key or "")
+    if k.startswith("ip:"):
+        return "ip:" + _mask_ip(k[3:])
+    return _mask_mac(k) if ":" in k else MASK
+
+
 def _mask(data: dict) -> dict:
+    """Redact anything that identifies the network or its owner. Masking is
+    driven by what a field *is*, not by a list of field names, because the
+    same MAC also lives in `key` and the same hostname in an event's `name`."""
     p = data.get("public") or {}
-    for k in ("ipv4", "ipv6", "hostname", "city", "region", "org", "asn"):
+    for k in ("ipv4", "ipv6", "hostname", "city", "region", "country", "org", "asn"):
         if p.get(k):
             p[k] = MASK
     if data.get("wifi"):
@@ -71,15 +82,25 @@ def _mask(data: dict) -> dict:
             d["ip"] = _mask_ip(d["ip"])
         if d.get("mac"):
             d["mac"] = _mask_mac(d["mac"])
-        for k in ("hostname",):
+        if d.get("key"):
+            d["key"] = _mask_key(d["key"])
+        # hostname is discovered, name/notes/tags are typed by the user, and
+        # the interface name says which of the owner's cards saw the device
+        for k in ("hostname", "name", "notes", "seen_on"):
             if d.get(k):
                 d[k] = MASK
+        if d.get("tags"):
+            d["tags"] = []
         d["ipv6"] = [_mask_ip(a) for a in (d.get("ipv6") or [])]
     for e in data.get("events") or []:
         if e.get("ip"):
             e["ip"] = _mask_ip(e["ip"])
         if e.get("mac"):
             e["mac"] = _mask_mac(e["mac"])
+        if e.get("key"):
+            e["key"] = _mask_key(e["key"])
+        if e.get("name"):
+            e["name"] = MASK
     return data
 
 

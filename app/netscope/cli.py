@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import sys
 import time
@@ -25,6 +26,21 @@ def _default_network() -> tuple[str, str]:
         if i.up and i.kind != "loopback" and i.networks:
             return i.networks[0], i.name
     return "", ""
+
+
+def _ipv4_network(spec: str) -> str:
+    """Normalized IPv4 CIDR, or "" when core.sweep would reject it."""
+    try:
+        net = ipaddress.ip_network(spec, strict=False)
+    except ValueError:
+        return ""
+    return str(net) if net.version == 4 else ""
+
+
+def _inventory_mac(ip: str) -> str:
+    """The inventory is keyed by MAC, so a host missing from the last-scan
+    cache still has to be resolved through the stored devices."""
+    return next((d.mac for d in store.load().values() if d.ip == ip), "")
 
 
 def cmd_status(as_json: bool, refresh: bool) -> int:
@@ -60,10 +76,14 @@ def cmd_scan(network: str, as_json: bool) -> int:
     if not network:
         print("no network to sweep", file=sys.stderr)
         return 1
+    cidr = _ipv4_network(network)
+    if not cidr:
+        print(f"bad network: {network}", file=sys.stderr)
+        return 1
     if not as_json:
-        print(f"sweeping {network} ...", file=sys.stderr)
-    result = core.sweep(network, iface)
-    events = store.record_sweep(result.hosts, result.network)
+        print(f"sweeping {cidr} ...", file=sys.stderr)
+    result = core.sweep(cidr, iface)
+    events = store.record_sweep(result.hosts, result.network, result.iface)
     notify.notify_events(events)
     if as_json:
         out = result.to_json()
@@ -78,6 +98,11 @@ def cmd_scan(network: str, as_json: bool) -> int:
         print(f"  * {e['type']:<11} {e.get('ip',''):<16} {e.get('name','')}", file=sys.stderr)
     print(f"{len(result.hosts)} hosts in {result.duration:.1f}s "
           f"({len(events)} change{'s' if len(events)!=1 else ''})", file=sys.stderr)
+    if result.truncated:
+        # a partial sweep is not a clean bill of health, and devices past the
+        # cap are never contacted, so they never age out either
+        print(f"note: {result.network} is larger than {core.MAX_SWEEP_HOSTS} addresses; "
+              f"only the first {core.MAX_SWEEP_HOSTS} were swept", file=sys.stderr)
     return 0
 
 
@@ -90,14 +115,20 @@ def cmd_watch(network: str, interval: int) -> int:
     if not network:
         print("no network to watch", file=sys.stderr)
         return 1
+    # fail before the loop: a bad CIDR in a unit file would otherwise retry
+    # forever and never trip Restart=on-failure
+    cidr = _ipv4_network(network)
+    if not cidr:
+        print(f"bad network: {network}", file=sys.stderr)
+        return 1
     interval = max(15, interval)
-    print(f"{core.APP_NAME}: watching {network} every {interval}s "
+    print(f"{core.APP_NAME}: watching {cidr} every {interval}s "
           f"(first sweep seeds the baseline)", file=sys.stderr)
     try:
         while True:
             try:
-                result = core.sweep(network, iface, resolve_names=True)
-                events = store.record_sweep(result.hosts, result.network)
+                result = core.sweep(cidr, iface, resolve_names=True)
+                events = store.record_sweep(result.hosts, result.network, result.iface)
                 notify.notify_events(events)
                 stamp = time.strftime("%H:%M:%S")
                 if events:
@@ -156,15 +187,22 @@ def cmd_probe(ip: str, ports: str, as_json: bool) -> int:
     hits = core.probe(ip, plist)
     # find the host's MAC from the last sweep so the probe attaches to its device
     mac = ""
-    scan = core.last_scan() or {}
-    for h in scan.get("hosts", []):
-        if h.get("ip") == ip:
-            mac = h.get("mac", "")
+    scan = core.last_scan()
+    # the cache is plain JSON on disk, so an old or hand-edited file can hold
+    # any shape; a probe must not die on one
+    hosts = scan.get("hosts") if isinstance(scan, dict) else None
+    for h in hosts or []:
+        if isinstance(h, dict) and h.get("ip") == ip:
+            mac = h.get("mac") or ""
             break
+    if not mac:
+        mac = _inventory_mac(ip)
     events = store.record_probe(ip, mac, hits, scanned_ports=plist)
     notify.notify_events(events)
     findings, score, lvl = assess.assess(hits)
-    store.update_device(store.device_key(mac, ip), risk=score)
+    if store.update_device(store.device_key(mac, ip), risk=score) is None:
+        print(f"{ip} is not in the inventory, probe not saved (run --scan first)",
+              file=sys.stderr)
     if as_json:
         print(json.dumps({"ports": [asdict(h) for h in hits],
                           "assessment": {"score": score, "level": lvl,
@@ -225,11 +263,17 @@ def cmd_identify(ip: str, as_json: bool) -> int:
     # a light dossier for the type guess (no full probe; use ARP/known ports)
     from dataclasses import asdict as _asdict
     hits = core.probe(ip, core.profile_ports("quick"))
-    mac = (core.neighbours().get(ip) or {}).get("mac", "")
+    mac = (core.neighbours().get(ip) or {}).get("mac", "") or _inventory_mac(ip)
     d = recon.Dossier(ip=ip, mac=mac, vendor=core.vendor_for_mac(mac),
                       hostname=core._rdns(ip) or core._mdns(ip),
                       ports=hits, discovery=disc, services=recon._mdns_services(ip))
     dtype = recon.guess_type(d)
+    # the report's Type column has no other writer outside the GUI, but this
+    # dossier is lighter than the GUI's (no TTL, no HTTP probe, no gateway
+    # flag), so "unknown" here means "nothing seen", not "not a printer":
+    # storing it would erase a better type an AI investigation already found
+    if dtype and dtype != "unknown":
+        store.update_device(store.device_key(mac, ip), dtype=dtype)
     out = {"ip": ip, "dtype": dtype,
            "upnp": _asdict(disc.upnp) if disc.upnp else None,
            "netbios": _asdict(disc.netbios) if disc.netbios else None,
@@ -255,6 +299,9 @@ def cmd_identify(ip: str, as_json: bool) -> int:
 
 def cmd_assess(ip: str, ports: str, as_json: bool) -> int:
     plist = core.profile_ports(ports)
+    if not plist:  # a typo in --ports would otherwise read as an all-clear
+        print("no ports", file=sys.stderr)
+        return 1
     hits = core.probe(ip, plist)
     findings, score, lvl = assess.assess(hits)
     if as_json:
@@ -293,6 +340,11 @@ def main(argv=None) -> int:
     ap.add_argument("--version", action="store_true")
     args = ap.parse_args(argv)
 
+    # an unset shell variable must not fall through the dispatch and open the GUI
+    for opt in ("probe", "assess", "identify", "report", "wake"):
+        if getattr(args, opt) == "":
+            ap.error(f"--{opt} needs a value")
+
     if args.version:
         print(f"{core.APP_NAME} {core.VERSION} // {core.TAGLINE}")
         return 0
@@ -306,17 +358,17 @@ def main(argv=None) -> int:
         return cmd_events(args.json, args.limit)
     if args.scan is not None:
         return cmd_scan(args.scan, args.json)
-    if args.report:
+    if args.report is not None:
         return cmd_report(args.report, args.out or "", args.sanitized)
-    if args.wake:
+    if args.wake is not None:
         return cmd_wake(args.wake)
     if args.wifi:
         return cmd_wifi(args.json)
-    if args.identify:
+    if args.identify is not None:
         return cmd_identify(args.identify, args.json)
-    if args.assess:
+    if args.assess is not None:
         return cmd_assess(args.assess, args.ports, args.json)
-    if args.probe:
+    if args.probe is not None:
         return cmd_probe(args.probe, args.ports, args.json)
 
     if args.tui:

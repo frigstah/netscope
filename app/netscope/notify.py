@@ -3,6 +3,7 @@ Developed for and by frig."""
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 
@@ -22,7 +23,20 @@ _URGENCY = {
 }
 
 
-def _send(headline: str, body: str, glyph: str, urgency: str) -> None:
+def enabled() -> bool:
+    """Set NETSCOPE_NOTIFY=0 to mute every alert this process would raise. A
+    scripted sweep, a test run or a sweep from a container has no business
+    reaching the desktop bus, and a fresh state directory makes every device on
+    the network look new."""
+    return os.environ.get("NETSCOPE_NOTIFY", "1").strip().lower() not in (
+        "0", "false", "no", "off")
+
+
+def _send(headline: str, body: str, glyph: str, urgency: str) -> bool:
+    """True only if an alert actually reached a notification daemon, so the
+    caller's count reflects what the user saw."""
+    if not enabled():
+        return False
     if shutil.which("omarchy-notification-send"):
         cmd = ["omarchy-notification-send", "--app-name", "NetScope",
                "-u", urgency]
@@ -32,12 +46,13 @@ def _send(headline: str, body: str, glyph: str, urgency: str) -> None:
     elif shutil.which("notify-send"):
         cmd = ["notify-send", "-a", "NetScope", "-u", urgency, headline, body]
     else:
-        return
+        return False
     try:
-        subprocess.run(cmd, timeout=5, check=False,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        r = subprocess.run(cmd, timeout=5, check=False,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return r.returncode == 0
     except (OSError, subprocess.TimeoutExpired):
-        pass
+        return False
 
 
 def _headline(ev: dict) -> tuple[str, str]:
@@ -53,6 +68,13 @@ def _headline(ev: dict) -> tuple[str, str]:
     if t == store.EV_BACK:
         return "Device back online", f"{who}  ·  {ip}"
     return "NetScope", who
+
+
+def summary(ev: dict) -> str:
+    """One-line form of an event, for the TUI and anything else without a
+    notification daemon to talk to."""
+    head, body = _headline(ev)
+    return f"{head}: {body}"
 
 
 # Which event types are worth interrupting the user for. Device arrivals and
@@ -72,6 +94,7 @@ def notify_events(events: list[dict], types: set[str] | None = None) -> int:
         if ev.get("randomized") and ev.get("type") in (store.EV_NEW, store.EV_BACK, store.EV_GONE):
             continue
         head, body = _headline(ev)
-        _send(head, body, _GLYPH.get(ev["type"], ""), _URGENCY.get(ev["type"], "normal"))
-        sent += 1
+        if _send(head, body, _GLYPH.get(ev["type"], ""),
+                 _URGENCY.get(ev["type"], "normal")):
+            sent += 1
     return sent

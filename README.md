@@ -82,9 +82,10 @@ and plain sockets. No root, no `nmap`.
 
 ## Requirements
 
-- `python3` 3.10 or newer, `python-gobject`, `gtk4` 4.10+, `libadwaita` 1
+- `python3` 3.11 or newer, `python-gobject`, `gtk4` 4.12+, `libadwaita` 1
   (`omarchy pkg add python-gobject gtk4 libadwaita`)
 - `iproute2`, `iputils` (ping), `curl` - present on stock Omarchy
+- the command line, `netscope --tui` and the watcher need none of the GTK stack
 - `avahi` for mDNS names, `networkmanager`/`iw` for the Wi-Fi panel (optional)
 - for AI SCAN: a cloud AI CLI (`claude`, `gemini` or `codex`) **or** a local
   [Ollama](https://ollama.com) (`ollama serve` on `localhost:11434`) - optional
@@ -152,6 +153,10 @@ It writes and enables `netscope-watch.service`. The inventory and event log
 live in `~/.local/state/netscope/`. Stop it with
 `systemctl --user disable --now netscope-watch.service`.
 
+Set `NETSCOPE_NOTIFY=0` to mute desktop alerts for a run. Worth doing when you
+script `--scan` in a loop or point NetScope at a fresh state directory, because
+an empty inventory makes every device on the network look new at once.
+
 `--json` on any of those gives machine-readable output.
 
 ## Privacy
@@ -211,7 +216,9 @@ systemctl --user disable --now netscope-watch.service 2>/dev/null || true
 omarchy plugin remove io.github.frigstah.netscope
 rm -f ~/.local/bin/netscope ~/.local/share/applications/netscope.desktop
 rm -f ~/.config/systemd/user/netscope-watch.service
+rm -f ~/.local/share/icons/hicolor/256x256/apps/netscope.png
 rm -rf ~/.local/state/netscope   # inventory + event history
+rm -rf ~/.cache/netscope         # cached public IP + location
 ```
 
 ---
