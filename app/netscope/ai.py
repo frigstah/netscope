@@ -440,6 +440,20 @@ def investigate(dossier: Dossier, on_delta: Callable[[str], None],
     _stream(prompt, on_delta, on_done, stop, backend)
 
 
+def investigate_port(dossier: Dossier, port: int,
+                     on_delta: Callable[[str], None],
+                     on_done: Callable[[str, str], None],
+                     stop: Optional[threading.Event] = None,
+                     backend: Optional[str] = None) -> None:
+    """Explain how the owner reaches and logs into one open port on their own
+    device (likely URL, client/command, factory-default credentials). Runs in
+    the calling thread."""
+    prompt = (recon.PORT_ACCESS_BRIEF + "\n\n" + _UNTRUSTED_NOTE + "\n\n"
+              + _wrap_evidence(recon.build_port_prompt(dossier, port))
+              + "\n\nWrite the answer now.")
+    _stream(prompt, on_delta, on_done, stop, backend)
+
+
 def investigate_network(devices: list, public: dict,
                         on_delta: Callable[[str], None],
                         on_done: Callable[[str, str], None],

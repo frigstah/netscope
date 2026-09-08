@@ -641,17 +641,30 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         self.sec_strip.append(self.findings_btn)
         box.append(self.sec_strip)
 
-        sel = Gtk.NoSelection.new(self.port_store)
-        view = Gtk.ColumnView.new(sel)
+        self.port_sel = Gtk.SingleSelection.new(self.port_store)
+        self.port_sel.set_can_unselect(True)
+        self.port_sel.set_autoselect(False)
+        view = Gtk.ColumnView.new(self.port_sel)
         self.port_view = view
+        # double-click or Enter on a port asks the AI how to reach and log in to
+        # that service on this device (URL, client/command, factory defaults)
+        view.connect("activate", lambda _v, pos: self._investigate_port(pos))
         view.append_column(_text_column("PORT", "port", "ns-cell-ip", fixed=100))
         view.append_column(_text_column("SERVICE", "service", "", fixed=190))
         view.append_column(_text_column("LATENCY", "latency", "ns-dim",
                                         fmt=lambda v: f"{v:.1f} ms", fixed=110))
         view.append_column(_text_column("BANNER", "banner", "ns-dim", expand=True))
+        view.set_tooltip_text(
+            "Double-click a port for access help: the likely login URL, the "
+            "client or command to use, and the vendor's default credentials"
+        )
         scroll = Gtk.ScrolledWindow(vexpand=True)
         scroll.set_child(view)
         box.append(scroll)
+        self.port_hint = _label("ns-dim")
+        self.port_hint.set_text("double-click a port for access help (login URL, client, default credentials)")
+        self.port_hint.set_visible(False)
+        box.append(self.port_hint)
         return box
 
     # ---- helpers ----------------------------------------------------------- #
@@ -1262,6 +1275,8 @@ class NetScopeWindow(Gtk.ApplicationWindow):
                 pos = i
                 break
         self.port_store.insert(pos, row)
+        if getattr(self, "port_hint", None) is not None:
+            self.port_hint.set_visible(True)
         if pos == 0:
             self.port_view.scroll_to(0, None, Gtk.ListScrollFlags.NONE, None)
         self.log(f"open {h.port}/tcp {h.service}" + (f"  [{h.banner}]" if h.banner else ""))
@@ -1370,6 +1385,25 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         h.is_gateway = h.is_gateway or ip in set(core.default_routes().values())
         return h
 
+    def _investigate_port(self, pos: int) -> None:
+        item = self.port_store.get_item(pos) if pos >= 0 else None
+        if item is None:
+            return
+        port = int(item.port)
+        if not self._target_ip:
+            return
+        if not self._ai_backend:
+            self.log("no AI engine available (install claude/gemini/codex, or run ollama serve)")
+            return
+        ip = self._target_ip
+        host = self._core_host(ip)
+        hits = self._probe_cache.get(ip)
+        win = AiScanWindow(self, ip, host, hits, self._ai_backend, mode="port", port=port)
+        self._ai_windows.append(win)
+        win.present()
+        win.start_if_ready()
+        self.log(f"ai access {ip}:{port}" + (f" via {win.backend}" if win.backend else " - choose an engine"))
+
     def start_ai_scan(self) -> None:
         if not self._target_ip:
             return
@@ -1416,9 +1450,14 @@ class AiScanWindow(Gtk.Window):
     """
 
     def __init__(self, parent: "NetScopeWindow", ip: str, host=None, hits=None,
-                 backend=None, mode: str = "device", devices=None, public=None):
-        title = (f"{core.APP_NAME} · AI network summary" if mode == "network"
-                 else f"{core.APP_NAME} · AI investigation · {ip}")
+                 backend=None, mode: str = "device", devices=None, public=None,
+                 port: int = 0):
+        if mode == "network":
+            title = f"{core.APP_NAME} · AI network summary"
+        elif mode == "port":
+            title = f"{core.APP_NAME} · AI access · {ip}:{port}"
+        else:
+            title = f"{core.APP_NAME} · AI investigation · {ip}"
         super().__init__(title=title)
         # register with the app so this window carries the io.github.frigstah.netscope class
         # (not "python3"), which the Hyprland float rule matches on
@@ -1436,6 +1475,7 @@ class AiScanWindow(Gtk.Window):
         self.hits = hits
         self.backend = backend
         self.mode = mode
+        self.port = port
         self.devices = devices or []
         self.public = public or {}
         self._engines = ai.engines()
@@ -1698,13 +1738,21 @@ class AiScanWindow(Gtk.Window):
             GLib.idle_add(set_status, f"asking {backend}…", 0.7)
             GLib.idle_add(begin)
             try:
-                ai.investigate(
-                    dossier,
-                    on_delta=lambda t: GLib.idle_add(append, t),
-                    on_done=lambda full, err: GLib.idle_add(finish, err),
-                    stop=stop,
-                    backend=backend,
-                )
+                if self.mode == "port":
+                    ai.investigate_port(
+                        dossier, self.port,
+                        on_delta=lambda t: GLib.idle_add(append, t),
+                        on_done=lambda full, err: GLib.idle_add(finish, err),
+                        stop=stop, backend=backend,
+                    )
+                else:
+                    ai.investigate(
+                        dossier,
+                        on_delta=lambda t: GLib.idle_add(append, t),
+                        on_done=lambda full, err: GLib.idle_add(finish, err),
+                        stop=stop,
+                        backend=backend,
+                    )
             except Exception as e:
                 # the window only leaves "receiving report…" through _finish,
                 # so an escaping exception would park it there forever

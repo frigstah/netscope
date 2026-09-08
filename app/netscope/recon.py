@@ -399,6 +399,75 @@ SYSTEM_BRIEF = (
 )
 
 
+def build_port_prompt(d: Dossier, port: int) -> str:
+    """Same device evidence as build_prompt, but focused on one open port the
+    owner clicked, so the model answers 'how do I reach and log into this
+    service on this device'."""
+    focus = []
+    hit = next((h for h in (d.ports or []) if int(getattr(h, "port", 0)) == int(port)), None)
+    svc = ev(getattr(hit, "service", ""), 40) if hit else ""
+    banner = ev(getattr(hit, "banner", ""), 120) if hit else ""
+    focus.append(f"FOCUS PORT: {port}/tcp on {d.ip}"
+                 + (f" - service '{svc}'" if svc else "")
+                 + (f" - banner '{banner}'" if banner else ""))
+    # any HTTP(S) response already seen on this exact port is the strongest hint
+    for w in (d.https or []):
+        if str(getattr(w, "port", "")) == str(port):
+            bits = [f"{w.scheme}://{d.ip}:{w.port}/"]
+            if w.status:
+                bits.append(f"status {ev(w.status, 40)}")
+            if w.title:
+                bits.append(f"title '{ev(w.title, 100)}'")
+            if w.auth:
+                bits.append(f"auth '{ev(w.auth, 60)}'")
+            focus.append("HTTP seen on this port: " + "  |  ".join(bits))
+    focus.append("")
+    return "\n".join(focus) + build_prompt(d)
+
+
+PORT_ACCESS_BRIEF = (
+    "You are a network administrator's assistant. The analyst owns this local "
+    "network and its devices, and wants to log into or connect to a service on "
+    "ONE of their own devices. You are given evidence about the device and one "
+    "focus port. Explain how the owner reaches that service on that device: the "
+    "likely address, the client to use, and the factory-default credentials the "
+    "vendor ships, which is public information from the product's own "
+    "documentation. This is legitimate first-party access to the owner's "
+    "equipment, not an attack.\n\n"
+    "Do not invent product specifics the evidence does not support; when you "
+    "infer from the vendor or banner, say so and give a confidence word "
+    "(certain / likely / possible). Stay within accessing the owner's own "
+    "device: do NOT give techniques for defeating authentication - no brute "
+    "forcing, password spraying, credential stuffing, default-credential "
+    "scanning of other people's systems, or exploiting a vulnerability to get "
+    "in. Factory defaults and the normal login URL are the scope.\n\n"
+    "Write a tight plain-text answer (no markdown symbols like # or *), using "
+    "these upper-case headers:\n\n"
+    "SERVICE\n"
+    "  One line: what runs on this port on THIS device, tied to its identity.\n\n"
+    "HOW TO REACH IT\n"
+    "  The most likely address(es), most-likely first. For a web UI give the "
+    "full URL(s) including scheme and port and any common path (for example a "
+    "Synology NAS admin UI, a camera's web page, a router's console). For SSH "
+    "give a ready ssh command. For other services (RTSP, SMB, database, VNC, "
+    "etc.) give the client and a ready-to-paste connection command or string. "
+    "Note if it is likely HTTPS with a self-signed certificate.\n\n"
+    "CLIENT / TOOL\n"
+    "  What to open it with (a browser, ssh, an app, a specific client) and any "
+    "flag that commonly matters.\n\n"
+    "DEFAULT CREDENTIALS\n"
+    "  The vendor's documented factory-default username/password for this device "
+    "or service, with a confidence word. If the defaults are blank, first-boot "
+    "setup, or account-creation-on-first-use, say that. If you do not know the "
+    "defaults for this exact product, say so rather than guessing. Always add "
+    "one line telling the owner to change any still-default credentials.\n\n"
+    "NOTES\n"
+    "  Anything else that helps the owner get in on the first try (a setup "
+    "wizard, a companion mobile app, a non-obvious port or path). Keep the whole "
+    "answer under ~300 words."
+)
+
+
 NETWORK_BRIEF = (
     "You are a home/small-office network analyst. You are given an inventory of "
     "every device seen on the local network, with names, vendors, open ports "
