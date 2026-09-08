@@ -2,6 +2,36 @@
 
 Notable changes, newest first.
 
+## [1.9.1] - 2026-09-09
+
+Security fix for the marketplace review of 1.9.0.
+
+### Security
+- **A cloud AI CLI is now sandboxed, not merely asked to behave.** 1.9.0 ran
+  `gemini` in plan mode and `codex` in a read-only sandbox and left both with
+  the user's full environment and HOME. Those modes still allow file reads, and
+  the prompt quotes text chosen by devices on the LAN, so an injected
+  instruction could have led to local secret discovery or disclosure. Every
+  cloud engine now runs inside bubblewrap with an empty throwaway HOME, a wiped
+  environment, a read-only `/usr` and a few `/etc` files, and no view of the
+  user's home directory - no `~/.ssh`, no `~/.config`, not the plugin itself.
+  The only secret inside is the credential for the service being called, bound
+  read-only as one file so the CLI can still authenticate. The sandbox HOME is
+  the working directory and is deleted when the run ends.
+- **Tools are switched off on every backend, not just claude.** `claude` adds
+  `--restricted` and `--strict-mcp-config` to the existing `--tools ""`, so it
+  also ignores user, project and local settings files and any configured MCP
+  server. `codex` adds `--ignore-user-config` and `tools.web_search=false`.
+  `gemini` has no flag for this, so a settings file emptying its tool list and
+  disabling extensions and MCP servers is written into the sandbox HOME.
+- **Fails closed.** Without a working bubblewrap, cloud engines are not offered
+  at all - not by the picker, not by the default-engine lookup, and a direct
+  call refuses with an explanation. A local Ollama model is unaffected: it is an
+  HTTP request with no tool loop and no subprocess.
+- Network access remains open inside the sandbox because reaching the model is
+  the purpose of the call; every tool that could fetch or search on its own is
+  disabled.
+
 ## [1.9.0] - 2026-09-08
 
 Marketplace-readiness pass against the Omarchy plugin development guide.

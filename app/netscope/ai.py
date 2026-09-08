@@ -2,8 +2,12 @@
 the report back. Developed for and by frig.
 
 Two kinds of engine:
-  - a cloud CLI already installed and logged in (claude, then gemini, codex);
-    the plugin only invokes it, never touches its config or credentials.
+  - a cloud CLI already installed and logged in (claude, then gemini, codex).
+    A cloud CLI is an agent runner, not a plain text API, and the prompt it is
+    given quotes text written by devices on the LAN. So it is launched with its
+    tools switched off AND inside a bubblewrap sandbox: an empty throwaway HOME,
+    a scrubbed environment, and no view of the user's files. Without bubblewrap
+    the cloud engines are not offered at all.
   - a local Ollama model over http://localhost:11434, so a private
     investigation never leaves your machine.
 """
@@ -23,6 +27,7 @@ import time
 import urllib.error
 import urllib.request
 from collections import deque
+from pathlib import Path
 from typing import Callable, Optional
 
 from . import recon
@@ -37,16 +42,46 @@ from .recon import Dossier
 # must be a text generator, not an agent with tools. Every backend is launched
 # with its tools disabled / read-only.
 def _claude_cmd() -> list[str]:
+    # --tools "" disables every built-in tool; --restricted also drops the
+    # command-running tools and ignores user/project settings files, and
+    # --strict-mcp-config keeps configured MCP servers out.
     return ["claude", "-p", "--output-format", "stream-json", "--verbose",
-            "--include-partial-messages", "--tools", ""]
+            "--include-partial-messages", "--restricted", "--strict-mcp-config",
+            "--tools", ""]
 
 
 def _gemini_cmd() -> list[str]:
+    # gemini has no "no tools" flag, so the tools are removed through the
+    # settings file written into the sandbox HOME (see _write_engine_config).
     return ["gemini", "-o", "stream-json", "--approval-mode", "plan"]
 
 
 def _codex_cmd() -> list[str]:
-    return ["codex", "exec", "--skip-git-repo-check", "-s", "read-only", "-"]
+    # --ignore-user-config keeps the user's config.toml (and its MCP servers)
+    # out; web search off; the shell tool cannot leave the sandbox.
+    return ["codex", "exec", "--skip-git-repo-check", "-s", "read-only",
+            "--ignore-user-config", "-c", "tools.web_search=false", "-"]
+
+
+# Tool names to strip from gemini, which cannot be told "no tools" on the
+# command line. Written as a settings file into the throwaway HOME.
+_GEMINI_TOOLS = ["run_shell_command", "read_file", "write_file", "read_many_files",
+                 "search_file_content", "glob", "list_directory", "replace",
+                 "web_fetch", "google_web_search", "save_memory"]
+
+
+def _write_engine_config(backend: str, home: str) -> None:
+    """Config the engine will read from inside the sandbox. Only gemini needs
+    one: its tools are switched off here rather than on the command line."""
+    if backend != "gemini":
+        return
+    cfg = Path(home) / ".gemini"
+    cfg.mkdir(parents=True, exist_ok=True)
+    (cfg / "settings.json").write_text(json.dumps({
+        "tools": {"core": [], "exclude": _GEMINI_TOOLS, "sandbox": False},
+        "mcpServers": {},
+        "extensions": {"disableAll": True},
+    }), encoding="utf-8")
 
 
 CLI_BACKENDS = [
@@ -55,6 +90,151 @@ CLI_BACKENDS = [
     ("codex", _codex_cmd),
 ]
 _CLI = dict(CLI_BACKENDS)
+
+
+# --------------------------------------------------------------------------- #
+# sandbox
+# --------------------------------------------------------------------------- #
+
+# Switching an engine's tools off is necessary but not sufficient: it is still a
+# program running as the user, reading a prompt that quotes text collected from
+# the LAN. So it runs inside bubblewrap with an empty throwaway HOME, a scrubbed
+# environment and a read-only view of the system directories it needs to start.
+# The user's files - keys, tokens, configs, this repository - are simply not in
+# the mount namespace. The one secret inside is the credential for the very
+# service being called, which is the minimum needed to authenticate at all.
+
+SANDBOX_BIN = "bwrap"
+SANDBOX_HOME = "/home/netscope-ai"
+
+# What each CLI needs from the real HOME to authenticate. Nothing else is bound.
+_CLI_SECRETS = {
+    "claude": (".claude/.credentials.json",),
+    "gemini": (".gemini/oauth_creds.json", ".gemini/google_accounts.json"),
+    "codex": (".codex/auth.json",),
+}
+
+# The only environment variables that survive, per engine. Everything else -
+# SSH_AUTH_SOCK, tokens, XDG paths, the user's PATH additions - is dropped.
+_ENV_BASE = ("LANG", "LC_ALL", "TZ", "SSL_CERT_FILE", "SSL_CERT_DIR",
+             "NODE_EXTRA_CA_CERTS", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY")
+_CLI_ENV = {
+    "claude": ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"),
+    "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI",
+               "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION"),
+    "codex": ("OPENAI_API_KEY", "OPENAI_BASE_URL"),
+}
+
+# Where a per-user toolchain may live. The engine's own program files have to be
+# readable for it to start; these hold installed software, not secrets.
+_TOOLCHAIN_ROOTS = (".local/share/mise", ".local/share/pnpm", ".local/share/npm",
+                    ".local/lib", ".local/bin", ".nvm", ".bun", ".npm-global",
+                    ".cargo", ".deno", ".volta", ".asdf")
+
+# The read-only system view. The /lib symlinks matter: without them the ELF
+# interpreter is missing inside and every binary fails to exec.
+_SANDBOX_SYSTEM = ["--ro-bind", "/usr", "/usr",
+                   "--symlink", "usr/bin", "/bin",
+                   "--symlink", "usr/sbin", "/sbin",
+                   "--symlink", "usr/lib", "/lib",
+                   "--symlink", "usr/lib64", "/lib64"]
+
+_sandbox_ok: Optional[bool] = None
+
+
+def sandbox_available() -> bool:
+    """True when bubblewrap is installed and actually able to build a namespace
+    here - some kernels forbid unprivileged user namespaces. Probed once."""
+    global _sandbox_ok
+    if _sandbox_ok is None:
+        exe = shutil.which(SANDBOX_BIN)
+        if not exe:
+            _sandbox_ok = False
+        else:
+            try:
+                _sandbox_ok = subprocess.run(
+                    [exe] + _SANDBOX_SYSTEM + ["--unshare-all", "--share-net",
+                                               "--die-with-parent", "/usr/bin/true"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    timeout=10).returncode == 0
+            except (OSError, subprocess.SubprocessError):
+                _sandbox_ok = False
+    return _sandbox_ok
+
+
+def _toolchain_binds(exe: str) -> list[str]:
+    """Read-only binds for an engine installed under the user's home (mise, nvm,
+    npm, cargo…). Program files only; credentials live elsewhere and are bound
+    one file at a time."""
+    real = os.path.realpath(exe)
+    home = str(Path.home())
+    if not real.startswith(home + os.sep):
+        return []
+    for rel in _TOOLCHAIN_ROOTS:
+        root = os.path.join(home, rel)
+        if not real.startswith(root + os.sep):
+            continue
+        # the narrowest useful slice of that root: one tool, not every tool the
+        # version manager has ever installed
+        parts = real[len(root) + 1:].split(os.sep)
+        keep = os.path.join(root, *parts[:2]) if len(parts) > 2 else os.path.dirname(real)
+        return ["--ro-bind-try", keep, keep]
+    return ["--ro-bind-try", os.path.dirname(real), os.path.dirname(real)]
+
+
+def _sandbox_argv(backend: str, home: str, exe: str) -> list[str]:
+    """bwrap wrapper: read-only system, empty HOME, scrubbed environment."""
+    argv = [shutil.which(SANDBOX_BIN) or SANDBOX_BIN] + _SANDBOX_SYSTEM + [
+            "--proc", "/proc",
+            "--dev", "/dev",
+            "--tmpfs", "/tmp",
+            "--tmpfs", "/var",
+            "--tmpfs", "/run",
+            "--tmpfs", "/root",
+            "--tmpfs", "/home"]
+    for path in ("/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf",
+                 "/etc/localtime", "/etc/ssl", "/etc/ca-certificates",
+                 "/etc/pki", "/etc/passwd", "/etc/group"):
+        argv += ["--ro-bind-try", path, path]
+    # the engine's own program files, and the runtime it was installed with:
+    # a node-based CLI started through a version manager needs that node
+    runtimes = [exe] + [w for w in (shutil.which("node"),) if w]
+    seen_binds: set = set()
+    path_dirs = ["/usr/bin", "/bin"]
+    for tool in runtimes:
+        for flag, src, dst in zip(*[iter(_toolchain_binds(tool))] * 3):
+            if src not in seen_binds:
+                seen_binds.add(src)
+                argv += [flag, src, dst]
+        real = os.path.realpath(tool)
+        if real.startswith(str(Path.home()) + os.sep):
+            folder = os.path.dirname(real)
+            if folder not in path_dirs:
+                path_dirs.insert(0, folder)
+    argv += ["--bind", home, SANDBOX_HOME]
+    real_home = Path.home()
+    for rel in _CLI_SECRETS.get(backend, ()):
+        argv += ["--ro-bind-try", str(real_home / rel), f"{SANDBOX_HOME}/{rel}"]
+    argv += ["--chdir", SANDBOX_HOME,
+             # The network stays, because reaching the model is the whole point;
+             # every tool that could fetch on its own is switched off above.
+             # Everything else - IPC, pids, the user's mounts - is unshared.
+             "--unshare-all", "--share-net",
+             "--new-session",              # no ioctl back into the user's terminal
+             "--die-with-parent",
+             "--clearenv",
+             "--setenv", "HOME", SANDBOX_HOME,
+             "--setenv", "USER", "netscope",
+             "--setenv", "PATH", ":".join(path_dirs),
+             "--setenv", "TERM", "dumb",
+             "--setenv", "NO_COLOR", "1"]
+    if backend == "codex":
+        argv += ["--setenv", "CODEX_HOME", f"{SANDBOX_HOME}/.codex"]
+    for var in _ENV_BASE + _CLI_ENV.get(backend, ()):
+        value = os.environ.get(var)
+        if value:
+            argv += ["--setenv", var, value]
+    return argv
 
 
 # --------------------------------------------------------------------------- #
@@ -95,6 +275,10 @@ def ollama_model() -> str:
 # --------------------------------------------------------------------------- #
 
 def cloud_backend() -> Optional[str]:
+    """The first cloud CLI that is installed - and only if it can be sandboxed.
+    Without bubblewrap a cloud engine is not offered at all."""
+    if not sandbox_available():
+        return None
     for name, _ in CLI_BACKENDS:
         if shutil.which(name):
             return name
@@ -109,8 +293,9 @@ def available_backend() -> Optional[str]:
 def engines() -> list[tuple[str, str]]:
     """(id, label) for every engine available right now, for a selector."""
     out = []
+    sandboxed = sandbox_available()
     for name, _ in CLI_BACKENDS:
-        if shutil.which(name):
+        if shutil.which(name) and sandboxed:
             out.append((name, name + "  (cloud)"))
     if ollama_available():
         out.append(("ollama", f"ollama · {ollama_model()}  (local)"))
@@ -188,17 +373,32 @@ def _kill_group(pgid, proc, sig) -> None:
 
 
 def _stream_cli(backend: str, prompt: str, on_delta, on_done, stop) -> None:
-    cmd = _CLI[backend]()
+    exe = shutil.which(backend)
+    if not exe:
+        on_done("", f"{backend} is not installed")
+        return
+    if not sandbox_available():
+        on_done("", f"{backend} is only run inside a bubblewrap sandbox and "
+                    "bubblewrap is not usable here - install it (pacman -S "
+                    "bubblewrap), or investigate with a local Ollama model")
+        return
+    # the sandbox HOME and the engine's working directory are the same throwaway
+    # directory, and it is removed when the run ends
+    workdir = tempfile.mkdtemp(prefix="netscope-ai-")
     try:
-        workdir = tempfile.mkdtemp(prefix="netscope-ai-")
+        _write_engine_config(backend, workdir)
+        cmd = (_sandbox_argv(backend, workdir, exe)
+               + [os.path.realpath(exe)] + _CLI[backend]()[1:])
         proc = subprocess.Popen(
             cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, bufsize=1,
             start_new_session=True,   # own process group, so STOP can kill descendants
             cwd=workdir,              # never run the engine in the user's cwd
+            env={"PATH": "/usr/bin:/bin"},   # bwrap's own env; --clearenv clears the child's
         )
         pgid = os.getpgid(proc.pid)
-    except OSError as e:
+    except (OSError, ValueError) as e:
+        shutil.rmtree(workdir, ignore_errors=True)
         on_done("", f"could not launch {backend}: {e}")
         return
 
