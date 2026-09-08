@@ -419,10 +419,13 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         self.settings_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         self.settings_box.set_size_request(320, -1)
         self.settings_pop.set_child(self.settings_box)
-        # filled on every open: engines come and go (ollama starts, a CLI is
-        # installed) and the model lists are read fresh from their configs
-        self.settings_pop.connect("map", lambda *_: self._fill_settings())
         self.settings_btn.set_popover(self.settings_pop)
+        # Filled on every open, because engines come and go (ollama starts, a
+        # CLI is installed) and the model lists are read fresh from their
+        # configs. This has to happen *before* the popover is shown: swapping
+        # its children while it maps disturbs the grab that closes it when you
+        # click outside, which left it open until Esc.
+        self.settings_btn.set_create_popup_func(lambda *_a: self._fill_settings())
         header.append(self.settings_btn)
         self.watch_btn = Gtk.ToggleButton(label="WATCH")
         self.watch_btn.add_css_class("ns-watch")
