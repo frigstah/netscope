@@ -38,9 +38,9 @@ and plain sockets. No root, no `nmap`.
 - **AI SCAN** - fingerprints the selected device (open ports, banners, mDNS
   services, HTTP titles, TTL) and streams an AI report that identifies the
   manufacturer and model, says what the device is, and explains what each open
-  port is being used for. Pick the engine per investigation: a cloud CLI
-  (`claude`, `gemini`, `codex`) or a **local Ollama** model, so a private
-  investigation never leaves your machine.
+  port is being used for. Pick the engine *and the model* per investigation: a
+  cloud CLI (`claude`, `gemini`, `codex`) or any model pulled into a **local
+  Ollama**, so a private investigation never leaves your machine.
 - **Port access help** - double-click an open port in the probe results (or
   press Enter on it) and the AI answers how to get into that one service on that
   device: the likely login URL or a ready `ssh` command, the client or tool to
@@ -223,8 +223,18 @@ credential stuffing, default-credential scanning of other people's systems, or
 exploiting a vulnerability to get in - and NetScope itself never sends a
 credential anywhere or attempts a login. It prints an answer; you do the rest.
 
-Override the local endpoint/model with `NETSCOPE_OLLAMA_HOST` and
-`NETSCOPE_OLLAMA_MODEL`. Set `NETSCOPE_NOTIFY=0` to mute desktop alerts.
+The engine picker in the AI window lists each cloud CLI and one entry per model
+pulled into the local Ollama, so you choose the model and not just the provider.
+The choice is remembered between investigations. When every engine on offer is a
+local model there is no privacy question to answer, so the window starts on the
+default one instead of stopping to ask; anything that would send evidence off
+this machine still waits for you.
+
+A cloud CLI otherwise runs on whatever model it is configured for. Pin one with
+`NETSCOPE_CLAUDE_MODEL`, `NETSCOPE_GEMINI_MODEL` or `NETSCOPE_CODEX_MODEL` and
+the picker shows it. `NETSCOPE_OLLAMA_MODEL` names the default local model and
+puts it at the top of the list, `NETSCOPE_OLLAMA_HOST` moves the endpoint, and
+`NETSCOPE_NOTIFY=0` mutes desktop alerts.
 
 ## Layout
 

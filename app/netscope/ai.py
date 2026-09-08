@@ -36,17 +36,32 @@ from .recon import Dossier
 # The evidence in the prompt is written by devices on the LAN, so the engine
 # must be a text generator, not an agent with tools. Every backend is launched
 # with its tools disabled / read-only.
+def cli_model(backend: str) -> str:
+    """Model override for a cloud CLI - NETSCOPE_CLAUDE_MODEL,
+    NETSCOPE_GEMINI_MODEL, NETSCOPE_CODEX_MODEL. Unset leaves the CLI on its own
+    configured default. The value becomes one argv element after the model flag,
+    so it can name a model but cannot add a flag of its own."""
+    return os.environ.get("NETSCOPE_" + backend.upper() + "_MODEL", "").strip()
+
+
 def _claude_cmd() -> list[str]:
-    return ["claude", "-p", "--output-format", "stream-json", "--verbose",
-            "--include-partial-messages", "--tools", ""]
+    cmd = ["claude", "-p", "--output-format", "stream-json", "--verbose",
+           "--include-partial-messages", "--tools", ""]
+    model = cli_model("claude")
+    return cmd + (["--model", model] if model else [])
 
 
 def _gemini_cmd() -> list[str]:
-    return ["gemini", "-o", "stream-json", "--approval-mode", "plan"]
+    cmd = ["gemini", "-o", "stream-json", "--approval-mode", "plan"]
+    model = cli_model("gemini")
+    return cmd + (["-m", model] if model else [])
 
 
 def _codex_cmd() -> list[str]:
-    return ["codex", "exec", "--skip-git-repo-check", "-s", "read-only", "-"]
+    model = cli_model("codex")
+    # the trailing "-" reads the prompt from stdin and has to stay last
+    return (["codex", "exec", "--skip-git-repo-check", "-s", "read-only"]
+            + (["-m", model] if model else []) + ["-"])
 
 
 CLI_BACKENDS = [
@@ -107,13 +122,27 @@ def available_backend() -> Optional[str]:
 
 
 def engines() -> list[tuple[str, str]]:
-    """(id, label) for every engine available right now, for a selector."""
+    """(id, label) for every engine available right now, for a selector.
+
+    Every pulled Ollama model is its own entry, with the id "ollama:<model>",
+    which _stream routes to that model. Plain "ollama" still means "whatever
+    ollama_model() resolves to" and stays valid as a saved preference.
+    """
     out = []
     for name, _ in CLI_BACKENDS:
         if shutil.which(name):
-            out.append((name, name + "  (cloud)"))
+            model = cli_model(name)
+            out.append((name, f"{name} · {model}  (cloud)" if model
+                        else f"{name}  (cloud)"))
     if ollama_available():
-        out.append(("ollama", f"ollama · {ollama_model()}  (local)"))
+        models = ollama_models()
+        env = os.environ.get("NETSCOPE_OLLAMA_MODEL", "").strip()
+        if env:                       # the configured model leads, so it is the default
+            models = [env] + [m for m in models if m != env]
+        for m in models:
+            out.append((f"ollama:{m}", f"ollama · {m}  (local)"))
+        if not models:                # daemon up but nothing pulled yet
+            out.append(("ollama", f"ollama · {ollama_model()}  (local)"))
     return out
 
 

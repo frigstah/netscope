@@ -161,9 +161,13 @@ def _tail_mark(buf: Gtk.TextBuffer) -> Gtk.TextMark:
     return mark
 
 
-def _dropdown(items: list[str], width: int, cap: int = 16) -> Gtk.DropDown:
+def _dropdown(items: list[str], width: int, cap: int = 16,
+              list_cap: int = 0) -> Gtk.DropDown:
     """DropDown whose button label ellipsizes to `cap` chars, so a long item
-    (a wide network string) can never balloon the toolbar past the tile."""
+    (a wide network string) can never balloon the toolbar past the tile.
+    `list_cap` caps the popup rows separately - the popup is free to be wider
+    than the button, which matters when the rows differ only near their end
+    (two models from the same family). 0 keeps the popup on `cap`."""
     dd = Gtk.DropDown.new_from_strings(items)
     factory = Gtk.SignalListItemFactory()
 
@@ -178,8 +182,41 @@ def _dropdown(items: list[str], width: int, cap: int = 16) -> Gtk.DropDown:
     factory.connect("setup", setup)
     factory.connect("bind", bind)
     dd.set_factory(factory)
+    if list_cap:
+        listf = Gtk.SignalListItemFactory()
+
+        def list_setup(_f, item):
+            lbl = _label()
+            lbl.set_max_width_chars(list_cap)
+            item.set_child(lbl)
+
+        listf.connect("setup", list_setup)
+        listf.connect("bind", bind)
+        dd.set_list_factory(listf)
     dd.set_size_request(width, -1)
     return dd
+
+
+def _settle_engine(ids: list[str], saved: str) -> str | None:
+    """Which engine an AI window may start on unprompted, or None to stop and
+    let the user choose.
+
+    Evidence leaving this machine is the decision worth pausing for, so a cloud
+    CLI is only taken when the user picked it before or it is the only engine
+    there is. Several local Ollama models settle on their own: choosing between
+    them is not a privacy decision, since none of them leaves the machine.
+    """
+    local = [i for i in ids if i == "ollama" or i.startswith("ollama:")]
+    if saved in ids:
+        return saved
+    if saved == "ollama" and local:
+        # older builds remembered the provider, from before models were listed
+        return local[0]
+    if len(ids) == 1:
+        return ids[0]
+    if ids and len(local) == len(ids):
+        return local[0]
+    return None
 
 
 def _mark_column() -> Gtk.ColumnViewColumn:
@@ -1493,13 +1530,7 @@ class AiScanWindow(Gtk.Window):
         ids = [e[0] for e in self._engines]
         # Never send anything before the engine is settled: use the remembered
         # choice, or the only engine available; otherwise wait for the user.
-        saved = store.get_pref("ai_engine")
-        if saved in ids:
-            self.backend = saved
-        elif len(ids) == 1:
-            self.backend = ids[0]
-        else:
-            self.backend = None
+        self.backend = _settle_engine(ids, store.get_pref("ai_engine") or "")
         self._stop = threading.Event()
         self._buffer_started = False
         self._started = False
@@ -1540,10 +1571,14 @@ class AiScanWindow(Gtk.Window):
         if self._engines:
             ids = [e[0] for e in self._engines]
             self._engine_ids = ids
-            self.engine_dd = _dropdown([e[1] for e in self._engines], 150, cap=22)
+            self.engine_dd = _dropdown([e[1] for e in self._engines], 150,
+                                       cap=22, list_cap=44)
             sel = ids.index(self.backend) if self.backend in ids else 0
             self.engine_dd.set_selected(sel)
-            self.engine_dd.set_tooltip_text("Which AI engine to use (cloud, or local Ollama)")
+            self.engine_dd.set_tooltip_text(
+                "Which AI engine and model to use: a cloud CLI, or any model "
+                "pulled into the local Ollama"
+            )
             self.engine_dd.connect("notify::selected", self._on_engine_changed)
             header.append(self.engine_dd)
         self.spinner = Gtk.Label(label="●")

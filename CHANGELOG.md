@@ -17,6 +17,18 @@ Notable changes, newest first.
   prompt like every other network-sourced string, and the engine still runs with
   its tools disabled, so nothing is ever sent or attempted on your behalf.
 
+- **Model selection, not just provider selection.** The engine picker now lists
+  one entry per model pulled into the local Ollama (`ollama · llama3.2`,
+  `ollama · qwen2.5-coder:14b`, …) and remembers which you chose. Cloud CLIs
+  take `NETSCOPE_CLAUDE_MODEL`, `NETSCOPE_GEMINI_MODEL` and
+  `NETSCOPE_CODEX_MODEL` to pin a model, shown in the picker; unset, each CLI
+  keeps its own configured default. The value is passed as a single argument
+  after the model flag, so it can name a model but cannot add a flag, and the
+  tools-disabled / read-only guards are unchanged. When every available engine
+  is a local model the window starts on the default one rather than asking:
+  choosing between local models is not a privacy decision. Anything that would
+  leave this machine still waits for an explicit choice.
+
 ### Fixed
 - The bar's **Open** action ran `omarchy-launch-or-focus netscope`, which matches
   any window whose class or title merely contains the word "netscope" - a
