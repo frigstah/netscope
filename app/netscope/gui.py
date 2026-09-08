@@ -353,6 +353,8 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         self._settings_loading = False
         self._set_provs: list[str] = []
         self._set_models: list[str] = []
+        self._set_provider = ""
+        self._prov_btns: dict = {}
         self._public: dict = {}
         self._devices: dict = {}
         self._new_ips: set = set()
@@ -1186,8 +1188,29 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         store.set_pref("ai_models", got)
 
     def _fill_settings(self) -> None:
+        """Rebuild the cogwheel for a fresh open.
+
+        Tearing the old widgets down makes GTK emit row-selected and toggled on
+        the way out. None of that is a choice the user made, so the whole
+        rebuild runs behind the guard - otherwise reopening the popover saved
+        the half-dismantled state and quietly dropped the chosen model.
+        """
+        self._settings_loading = True
+        try:
+            self._build_settings()
+        finally:
+            self._settings_loading = False
+
+    def _build_settings(self) -> None:
         """(Re)build the cogwheel: provider, model, and a box for a model name
-        this build has never heard of."""
+        this build has never heard of.
+
+        Deliberately built from toggle buttons and a list rather than dropdowns.
+        A GtkDropDown puts a popover inside this popover, and once that nested
+        popover has opened and closed, the outer one keeps the keyboard grab but
+        loses the pointer grab: Esc would close it, clicking outside would not.
+        Nothing here opens a popover of its own.
+        """
         box = self.settings_box
         while (child := box.get_first_child()) is not None:
             box.remove(child)
@@ -1208,12 +1231,26 @@ class NetScopeWindow(Gtk.ApplicationWindow):
             cur_prov, cur_model = provs[0], ""
 
         self._set_provs = provs
-        self.set_prov_dd = _dropdown(provs, 150, cap=18, list_cap=30)
-        self.set_prov_dd.set_selected(provs.index(cur_prov))
-        box.append(_field_row("PROVIDER", self.set_prov_dd))
+        self._prov_btns = {}
+        prow = Gtk.Box(spacing=0)
+        prow.add_css_class("linked")
+        for name in provs:
+            btn = Gtk.ToggleButton(label=name)
+            btn.set_active(name == cur_prov)
+            btn.connect("toggled", self._on_provider_toggled, name)
+            prow.append(btn)
+            self._prov_btns[name] = btn
+        box.append(_field_row("PROVIDER", prow))
 
-        self.set_model_dd = _dropdown([""], 150, cap=20, list_cap=44)
-        box.append(_field_row("MODEL", self.set_model_dd))
+        self.model_list = Gtk.ListBox()
+        self.model_list.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        self.model_list.add_css_class("ns-model-list")
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.set_propagate_natural_height(True)
+        scroll.set_max_content_height(210)
+        scroll.set_child(self.model_list)
+        box.append(_field_row("MODEL", scroll))
 
         self.set_effective = _label("ns-dim")
         box.append(self.set_effective)
@@ -1228,23 +1265,32 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         box.append(entry)
         self.set_entry = entry
 
-        self._settings_loading = True
         self._load_models(cur_prov, cur_model)
-        self.set_prov_dd.connect("notify::selected", self._on_settings_provider)
-        self.set_model_dd.connect("notify::selected", self._on_settings_changed)
-        self._settings_loading = False
+        self.model_list.connect("row-selected", self._on_settings_changed)
 
     def _load_models(self, provider: str, want: str) -> None:
-        """Fill the model dropdown for `provider` and select `want`."""
+        """Fill the model list for `provider` and select `want`."""
         models = ai.models_for(provider, self._remembered_models().get(provider, []))
         self._set_models = models
+        self._set_provider = provider
         default = ("whatever ollama picks" if provider == "ollama"
                    else "whatever the CLI is set to")
-        items = [f"default  ({default})"] + models
         was = self._settings_loading
         self._settings_loading = True
-        self.set_model_dd.set_model(Gtk.StringList.new(items))
-        self.set_model_dd.set_selected(models.index(want) + 1 if want in models else 0)
+        while (row := self.model_list.get_first_child()) is not None:
+            self.model_list.remove(row)
+        for text in [f"default  ({default})"] + models:
+            lbl = _label(xalign=0.0)
+            lbl.set_text(text)
+            lbl.set_margin_start(6)
+            lbl.set_margin_end(6)
+            lbl.set_margin_top(2)
+            lbl.set_margin_bottom(2)
+            row = Gtk.ListBoxRow()
+            row.set_child(lbl)
+            self.model_list.append(row)
+        idx = models.index(want) + 1 if want in models else 0
+        self.model_list.select_row(self.model_list.get_row_at_index(idx))
         self._settings_loading = was
         self._show_effective()
 
@@ -1252,15 +1298,27 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         self.set_effective.set_text("→ " + ai.engine_label(self._settings_engine()))
 
     def _settings_engine(self) -> str:
-        provider = self._set_provs[self.set_prov_dd.get_selected()]
-        sel = self.set_model_dd.get_selected()
-        model = self._set_models[sel - 1] if 0 < sel <= len(self._set_models) else ""
-        return f"{provider}:{model}" if model else provider
+        row = self.model_list.get_selected_row()
+        idx = row.get_index() if row is not None else 0
+        model = self._set_models[idx - 1] if 0 < idx <= len(self._set_models) else ""
+        return f"{self._set_provider}:{model}" if model else self._set_provider
 
-    def _on_settings_provider(self, *_a) -> None:
+    def _on_provider_toggled(self, btn, provider: str) -> None:
         if self._settings_loading:
             return
-        self._load_models(self._set_provs[self.set_prov_dd.get_selected()], "")
+        if not btn.get_active():
+            # clicking the live provider again must not leave none of them on
+            if provider == self._set_provider:
+                self._settings_loading = True
+                btn.set_active(True)
+                self._settings_loading = False
+            return
+        self._settings_loading = True
+        for name, other in self._prov_btns.items():
+            if name != provider:
+                other.set_active(False)
+        self._settings_loading = False
+        self._load_models(provider, "")
         self._on_settings_changed()
 
     def _on_settings_changed(self, *_a) -> None:
@@ -1277,7 +1335,7 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         model = entry.get_text().strip()
         if not model:
             return
-        provider = self._set_provs[self.set_prov_dd.get_selected()]
+        provider = self._set_provider
         self._remember_model(provider, model)
         entry.set_text("")
         self._load_models(provider, model)
