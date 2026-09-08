@@ -43,8 +43,8 @@ def _inventory_mac(ip: str) -> str:
     return next((d.mac for d in store.load().values() if d.ip == ip), "")
 
 
-def cmd_status(as_json: bool, refresh: bool) -> int:
-    st = core.status(refresh_public=refresh)
+def cmd_status(as_json: bool, refresh: bool, want_public: bool = True) -> int:
+    st = core.status(refresh_public=refresh, want_public=want_public)
     st["inventory"] = store.summary()
     if as_json:
         print(json.dumps(st))
@@ -57,7 +57,10 @@ def cmd_status(as_json: bool, refresh: bool) -> int:
         print(f"  {i['name']:<12} {tag:<8} {v4}")
     p = st["public"]
     print()
-    print(f"  public   {p.get('ipv4') or p.get('error') or '-'}  {p.get('org', '')}  {p.get('city', '')} {p.get('country', '')}")
+    if p.get("skipped"):
+        print("  public   (not looked up)")
+    else:
+        print(f"  public   {p.get('ipv4') or p.get('error') or '-'}  {p.get('org', '')}  {p.get('city', '')} {p.get('country', '')}")
     ls = st["lastScan"]
     if ls["hosts"]:
         age = int(time.time() - ls["at"])
@@ -337,6 +340,8 @@ def main(argv=None) -> int:
     ap.add_argument("--ports", default="quick")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--refresh", action="store_true", help="bypass the public-ip cache")
+    ap.add_argument("--no-public", action="store_true",
+                    help="skip the third-party public-ip lookup entirely")
     ap.add_argument("--version", action="store_true")
     args = ap.parse_args(argv)
 
@@ -349,7 +354,7 @@ def main(argv=None) -> int:
         print(f"{core.APP_NAME} {core.VERSION} // {core.TAGLINE}")
         return 0
     if args.status:
-        return cmd_status(args.json, args.refresh)
+        return cmd_status(args.json, args.refresh, not args.no_public)
     if args.watch is not None:
         return cmd_watch(args.watch, args.interval)
     if args.inventory:

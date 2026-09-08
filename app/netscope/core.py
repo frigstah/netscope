@@ -24,7 +24,7 @@ from typing import Callable, Iterable, Optional
 APP_NAME = "NetScope"
 APP_ID = "io.github.frigstah.netscope"
 TAGLINE = "developed for and by frig"
-VERSION = "1.8.0"
+VERSION = "1.9.0"
 
 CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "netscope"
 LAST_SCAN_FILE = CACHE_DIR / "last-scan.json"
@@ -864,7 +864,7 @@ def probe(ip: str, ports: Iterable[int], progress: ProgressCb = None,
 # Aggregate status for the bar popout
 # --------------------------------------------------------------------------- #
 
-def status(refresh_public: bool = False) -> dict:
+def status(refresh_public: bool = False, want_public: bool = True) -> dict:
     ifs = []
     for i in interfaces():
         if i.kind == "loopback":
@@ -874,13 +874,15 @@ def status(refresh_public: bool = False) -> dict:
             "ipv4": [a.cidr for a in i.ipv4], "ipv6": [a.addr for a in i.ipv6],
             "default": i.is_default, "gateway": i.gateway, "up": i.up,
         })
-    pub = public_info(force=refresh_public)
+    # the bar widget polls this while nobody is looking, and a public-IP lookup
+    # is a request to a third party, so it has to be possible to opt out of
+    pub = public_info(force=refresh_public) if want_public else None
     scan = last_scan() or {}
     return {
         "app": APP_NAME, "version": VERSION, "tagline": TAGLINE,
         "interfaces": ifs,
         "wifi": wifi_status(),
-        "public": asdict(pub),
+        "public": asdict(pub) if pub is not None else {"skipped": True},
         "lastScan": {
             "network": scan.get("network", ""),
             "iface": scan.get("iface", ""),

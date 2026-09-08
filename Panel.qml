@@ -119,7 +119,9 @@ Panel {
 
   function copy(text) {
     if (!text) return
-    Quickshell.execDetached(["sh", "-c", "printf %s " + JSON.stringify(text) + " | wl-copy"])
+    // argv, not a shell string: the text is a hostname or address read off the
+    // network, and a bar widget runs unsandboxed with the user's permissions
+    Quickshell.execDetached(["wl-copy", "--", text])
     lastError = ""
     flash.text = "COPIED " + text
     flashTimer.restart()
@@ -127,7 +129,12 @@ Panel {
 
   function refresh(force) {
     if (statusProc.running) return
-    statusProc.command = force ? [bin, "--status", "--json", "--refresh"] : [bin, "--status", "--json"]
+    if (force)
+      statusProc.command = [bin, "--status", "--json", "--refresh"]
+    else if (root.opened)
+      statusProc.command = [bin, "--status", "--json"]
+    else
+      statusProc.command = [bin, "--status", "--json", "--no-public"]
     statusProc.running = true
   }
 
@@ -137,7 +144,7 @@ Panel {
     try {
       var d = JSON.parse(raw)
       ifaces = d.interfaces || []
-      pub = d.public || {}
+      pub = d["public"] || {}
       lastScan = d.lastScan || {}
       inventory = d.inventory || {}
       loaded = true
@@ -170,6 +177,12 @@ Panel {
     command: [root.bin, "--status", "--json"]
     stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.applyStatus(text) }
     stderr: StdioCollector { waitForEnd: true }
+    // a widget that fails silently sits in a stale state and looks fine, so say
+    // it out loud: the header already renders lastError in the urgent colour
+    onExited: function(code) {
+      if (code !== 0)
+        root.lastError = (stderr.text || "").split("\n")[0].trim() || "STATUS FAILED"
+    }
   }
 
   Process {
@@ -177,12 +190,21 @@ Panel {
     command: [root.bin, "--scan", "--json"]
     stdout: StdioCollector { waitForEnd: true }
     stderr: StdioCollector { waitForEnd: true }
+    onExited: function(code) {
+      if (code !== 0)
+        root.lastError = (stderr.text || "").split("\n")[0].trim() || "SCAN FAILED"
+    }
     onRunningChanged: if (!running) { root.scanning = false; root.refresh(false) }
   }
 
   Timer {
-    interval: root.opened ? root.pollSeconds * 1000 : 120000
-    running: true
+    // A bar widget lives inside the long-running shell process, so it must not
+    // work while nobody is looking. Closed, the only thing that still needs
+    // data is the unknown-device tint, and that is off by default. The closed
+    // poll also skips the public-IP lookup, so an idle bar never talks to a
+    // third party.
+    interval: root.opened ? root.pollSeconds * 1000 : 300000
+    running: root.opened || root.alertOnUnknown
     repeat: true
     triggeredOnStart: true
     onTriggered: root.refresh(false)

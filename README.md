@@ -86,7 +86,12 @@ and plain sockets. No root, no `nmap`.
   (`omarchy pkg add python-gobject gtk4 libadwaita`)
 - `iproute2`, `iputils` (ping), `curl` - present on stock Omarchy
 - the command line, `netscope --tui` and the watcher need none of the GTK stack
-- `avahi` for mDNS names, `networkmanager`/`iw` for the Wi-Fi panel (optional)
+- `avahi` for mDNS names (`avahi-resolve`, `avahi-browse`),
+  `networkmanager`/`iw` for the Wi-Fi panel (optional)
+- `wl-clipboard` to copy from the bar popout, `xdg-utils` to open a device's web
+  UI and to find a terminal, `openssh` for the SSH action, `libnotify`
+  (`notify-send`) as the fallback when `omarchy-notification-send` is absent -
+  each only matters for the action that uses it (optional)
 - for AI SCAN: a cloud AI CLI (`claude`, `gemini` or `codex`) **or** a local
   [Ollama](https://ollama.com) (`ollama serve` on `localhost:11434`) - optional
 
@@ -99,8 +104,9 @@ omarchy plugin add https://github.com/frigstah/netscope.git --enable
 
 `omarchy plugin add` clones the plugin and enables the bar widget; `install.sh`
 links the `netscope` command into `~/.local/bin`, installs the desktop launcher
-and icon, and checks dependencies. For a private repo, make sure your git
-credentials can reach it (SSH key or a token) before running `plugin add`.
+and icon, and checks dependencies. It writes nothing outside `~/.local` and
+`~/.config`, and needs no root. `install.sh --enable` also places the bar
+widget; `install.sh --watch` installs the background watcher described below.
 
 ## Bar widget
 
@@ -111,8 +117,19 @@ credentials can reach it (SSH key or a token) before running `plugin add`.
 - the bar icon follows the theme; enable "Tint icon on unknown device" to make it
   turn urgent while an untrusted device is present. The popout shows the unknown count
 
-Settings live under the `io.github.frigstah.netscope` entry in `~/.config/omarchy/shell.json`:
-`pollSeconds` and `autoScanOnOpen`.
+Settings live under the `io.github.frigstah.netscope` entry in
+`~/.config/omarchy/shell.json`:
+
+| key | type | default | what it does |
+| --- | --- | --- | --- |
+| `pollSeconds` | integer 5-600 | `30` | how often the open popout refreshes |
+| `autoScanOnOpen` | boolean | `false` | sweep the LAN each time the popout opens |
+| `barGlyph` | `access-point`, `radar`, `wifi`, `crosshairs`, `lan` | `access-point` | which glyph sits in the bar |
+| `alertOnUnknown` | boolean | `false` | tint the icon while an untrusted device is present |
+
+With the popout closed the widget does nothing at all unless `alertOnUnknown` is
+on, and that poll runs `--no-public`, so an idle bar never contacts a third
+party. Opening the popout is what refreshes the public address.
 
 ## Window
 
@@ -127,6 +144,7 @@ Settings live under the `io.github.frigstah.netscope` entry in `~/.config/omarch
 ```
 netscope                    open the window
 netscope --status [--json]  interfaces, public IP, last sweep, inventory summary
+              --no-public   skip the third-party public-ip lookup
 netscope --scan [CIDR]      sweep (records changes, notifies on new devices)
 netscope --probe IP --ports quick|common|full|22,80,8000-8100
 netscope --assess IP        probe, then grade the security posture
@@ -164,11 +182,13 @@ an empty inventory makes every device on the network look new at once.
 The LAN sweep, port probe, device fingerprint and inventory all stay on your
 machine. Two things do reach the internet:
 
-- **Public IP lookup.** On start (and on refresh) NetScope asks a third-party
-  service for your public address and rough location: `api.ipify.org` (with
-  `icanhazip.com` / `ifconfig.me` as fallbacks) and `ipinfo.io` for the ISP and
-  city. Those services see your IP address by definition. The result is cached
-  for ten minutes in `~/.cache/netscope`.
+- **Public IP lookup.** When you open the popout or the window (and on refresh)
+  NetScope asks a third-party service for your public address and rough
+  location: `api.ipify.org` (with `icanhazip.com` / `ifconfig.me` as fallbacks)
+  and `ipinfo.io` for the ISP and city. Those services see your IP address by
+  definition. The result is cached for ten minutes in `~/.cache/netscope`.
+  `netscope --status --no-public` skips the lookup entirely, and the bar widget
+  uses that whenever its popout is closed.
 - **AI SCAN.** Sends the collected evidence about the selected device (or the
   inventory, for a whole-network summary) to whichever AI engine you pick.
 
@@ -179,8 +199,14 @@ AI SCAN. Reports written with `--sanitized` mask the public address, Wi-Fi
 identity, hostnames, MAC suffixes and any globally-routable device address;
 private LAN addresses are kept.
 
+A cloud AI CLI is invoked as a plain text generator with its tools disabled and
+a throwaway working directory, so an investigation cannot act on your machine
+even if a device on the network puts instructions in its banner. Evidence
+collected from the network is delimited and marked untrusted in the prompt.
+SNMP queries use the read-only `public` community and never write.
+
 Override the local endpoint/model with `NETSCOPE_OLLAMA_HOST` and
-`NETSCOPE_OLLAMA_MODEL`.
+`NETSCOPE_OLLAMA_MODEL`. Set `NETSCOPE_NOTIFY=0` to mute desktop alerts.
 
 ## Layout
 
@@ -191,7 +217,9 @@ io.github.frigstah.netscope/
 ├── install.sh         links the CLI, installs the launcher, checks deps
 ├── icon.png · preview.png
 ├── netscope.desktop   desktop launcher
+├── CHANGELOG.md
 ├── bin/netscope       launcher (symlinked to ~/.local/bin/netscope)
+├── app/netscope.py    entry point the launcher runs
 └── app/netscope/      python package
     ├── core.py        interfaces, public IP, sweep, probe
     ├── store.py       persistent device inventory + event log
@@ -213,12 +241,15 @@ systemd/netscope-watch.service   optional background watcher unit
 
 ```bash
 systemctl --user disable --now netscope-watch.service 2>/dev/null || true
-omarchy plugin remove io.github.frigstah.netscope
-rm -f ~/.local/bin/netscope ~/.local/share/applications/netscope.desktop
 rm -f ~/.config/systemd/user/netscope-watch.service
+systemctl --user daemon-reload 2>/dev/null || true
+omarchy plugin remove io.github.frigstah.netscope --yes
+rm -f ~/.local/bin/netscope ~/.local/share/applications/netscope.desktop
 rm -f ~/.local/share/icons/hicolor/256x256/apps/netscope.png
 rm -rf ~/.local/state/netscope   # inventory + event history
-rm -rf ~/.cache/netscope         # cached public IP + location
+rm -rf ~/.cache/netscope         # cached public IP, location and last sweep
+command -v update-desktop-database >/dev/null && update-desktop-database ~/.local/share/applications || true
+command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q ~/.local/share/icons/hicolor || true
 ```
 
 ---

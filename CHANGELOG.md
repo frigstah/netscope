@@ -2,6 +2,37 @@
 
 Notable changes, newest first.
 
+## [1.9.0] - 2026-09-08
+
+Marketplace-readiness pass against the Omarchy plugin development guide.
+
+### Fixed
+- The bar widget polled `netscope --status --json` every two minutes forever,
+  open or closed, which spawned a process inside the long-running shell and
+  refreshed the third-party public-IP lookup every ten minutes for as long as
+  the session lasted. With the popout closed it now does nothing at all unless
+  "Tint icon on unknown device" is on, and that poll uses `--no-public`, so an
+  idle bar never contacts anyone.
+- The popout's copy action built a shell command out of text read off the
+  network. It passes argv to `wl-copy` directly now, with no shell involved,
+  which matters because plugins run unsandboxed with your permissions.
+- A failed status or sweep left the widget showing stale data as though nothing
+  had happened; failures now surface in the header.
+- `public` is a reserved word to older QML parsers, so the status parse is
+  written as `d["public"]`.
+
+### Added
+- `netscope --status --no-public` skips the third-party public-IP lookup.
+
+### Changed
+- Documented every external binary the plugin can invoke (`wl-clipboard`,
+  `xdg-utils`, `openssh`, `libnotify`, `avahi-browse`), all four bar-widget
+  settings with their types and defaults, what the widget does while closed,
+  and the AI privilege boundary.
+- Uninstall now covers the non-interactive `--yes` and refreshes the desktop
+  and icon caches that `install.sh` updates.
+- Dropped `docs/netscope.png`, a duplicate of the preview screenshot.
+
 ## [1.8.0] - 2026-09-08
 
 A second audit pass. Every fix below was reproduced before and after.
