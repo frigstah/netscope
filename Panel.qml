@@ -105,9 +105,10 @@ Panel {
 
   function openApp() {
     // Pass argv directly (no shell string) so nothing depends on a shellQuote
-    // helper the bar may not expose. omarchy-launch-or-focus focuses an
-    // existing NetScope window or launches a new one.
-    Quickshell.execDetached(["omarchy-launch-or-focus", "netscope", "uwsm-app -- " + bin])
+    // helper the bar may not expose. Match the app's own window class, not the
+    // bare word "netscope", so the focus does not land on an unrelated window
+    // that merely has "netscope" in its title (a terminal open in this repo).
+    Quickshell.execDetached(["omarchy-launch-or-focus", "io.github.frigstah.netscope", "uwsm-app -- " + bin])
     close()
   }
 

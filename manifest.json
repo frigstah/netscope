@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.frigstah.netscope",
   "name": "NetScope",
-  "version": "1.9.4",
+  "version": "1.9.5",
   "author": "frig",
   "license": "MIT",
   "description": "LAN reconnaissance for Omarchy: local IPs per interface, public IP, Wi-Fi and IPv6 context, and every device on the network with its vendor and guessed type. Probe any host's TCP ports, get a security-posture score, and run an AI investigation of a device or the whole network. Continuous monitoring names devices and alerts on new arrivals; export reports and drive it from a bar widget, a window, or a terminal UI. Developed for and by frig.",

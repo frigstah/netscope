@@ -2,6 +2,15 @@
 
 Notable changes, newest first.
 
+## [1.9.5] - 2026-09-09
+
+### Fixed
+- **Open** in the bar popout ran `omarchy-launch-or-focus netscope`, which
+  focuses any window whose class *or title* merely contains the word
+  "netscope" - a terminal sitting in the project directory would be focused
+  instead of the app starting, with nothing to show for the click. It now
+  matches the app's own window class, `io.github.frigstah.netscope`.
+
 ## [1.9.4] - 2026-09-09
 
 ### Fixed
