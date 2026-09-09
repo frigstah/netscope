@@ -1166,7 +1166,7 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         self.ai_btn.set_sensitive(bool(self._ai_backend))
         if not self._ai_backend:
             self.ai_btn.set_tooltip_text(
-                "No AI engine found (install claude, gemini or codex, or run ollama serve)"
+                "No AI engine found (install claude or codex, or run ollama serve)"
             )
         if not self._probing:
             self._clear_ports()
@@ -1221,7 +1221,7 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         provs = ai.providers()
         if not provs:
             miss = _label("ns-dim")
-            miss.set_text("No AI engine found.\nInstall claude, gemini or codex,\nor run ollama serve.")
+            miss.set_text("No AI engine found.\nInstall claude or codex,\nor run ollama serve.")
             box.append(miss)
             return
 
@@ -1646,7 +1646,7 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         if not ip:
             return
         if not self._ai_backend:
-            self.log("no AI engine available (install claude/gemini/codex, or run ollama serve)")
+            self.log("no AI engine available (install claude or codex, or run ollama serve)")
             return
         host = self._core_host(ip)
         hits = self._probe_cache.get(ip)
@@ -1660,7 +1660,7 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         if not self._target_ip:
             return
         if not self._ai_backend:
-            self.log("no AI engine available (install claude/gemini/codex, or run ollama serve)")
+            self.log("no AI engine available (install claude or codex, or run ollama serve)")
             return
         ip = self._target_ip
         host = self._core_host(ip)
@@ -1673,7 +1673,7 @@ class NetScopeWindow(Gtk.ApplicationWindow):
 
     def start_ai_network(self) -> None:
         if not self._ai_backend:
-            self.log("no AI engine available (install claude/gemini/codex, or run ollama)")
+            self.log("no AI engine available (install claude or codex, or run ollama)")
             return
         devices = [asdict(d) for d in store.load().values()]
         if not devices:

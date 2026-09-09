@@ -31,10 +31,10 @@ fi
 python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' \
   || echo "note: python3 is older than 3.11 - the window needs 3.11+; the command line and 'netscope --tui' do not"
 command -v avahi-resolve >/dev/null || echo "note: avahi not found - mDNS names will be skipped (optional)"
-command -v claude >/dev/null || command -v gemini >/dev/null || command -v codex >/dev/null \
+command -v claude >/dev/null || command -v codex >/dev/null \
   || curl -sf -m 2 -o /dev/null "${NETSCOPE_OLLAMA_HOST:-http://localhost:11434}/api/tags" \
-  || echo "note: no AI engine found - AI SCAN needs claude, gemini or codex, or a local 'ollama serve' (optional)"
-if command -v claude >/dev/null || command -v gemini >/dev/null || command -v codex >/dev/null; then
+  || echo "note: no AI engine found - AI SCAN needs claude or codex, or a local 'ollama serve' (optional)"
+if command -v claude >/dev/null || command -v codex >/dev/null; then
   command -v bwrap >/dev/null \
     || echo "note: bubblewrap not found - a cloud AI CLI is only ever run inside it, so cloud engines will not be offered (pacman -S bubblewrap). A local Ollama model needs no sandbox."
 fi

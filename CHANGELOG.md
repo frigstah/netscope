@@ -54,6 +54,29 @@ Notable changes, newest first.
 - The port table had both a tooltip and a permanent hint saying the same thing;
   only the hint remains.
 
+## [1.9.2] - 2026-09-09
+
+Completes the 1.9.1 security fix: tools are now provably off, not merely
+sandboxed, on every engine that ships.
+
+### Security
+- **codex no longer has any tools.** 1.9.1 sandboxed it and left its shell tool
+  in place, on the reasoning that the sandbox contained it. Tested, that was not
+  good enough: inside the sandbox codex would still list a directory, read a
+  file, and reach the network, with its own `auth.json` bound alongside it -
+  which is the injected-banner-steals-a-token path in miniature. It now runs
+  with every tool-granting feature disabled (`shell_tool`, `unified_exec`,
+  `code_mode_host`, `apps`, `plugins`, `plugin_sharing`, `remote_plugin`,
+  `browser_use` and its two variants, `computer_use`, `view_image`,
+  `in_app_browser`) on top of `--ignore-user-config`, no web search and the
+  read-only sandbox. Asked to print a planted file or its own credential, it
+  answers that it has no tools to do so - as claude already did.
+- **gemini is no longer offered.** It has no command-line way to disable its
+  tools; a settings file meant to do so could not be verified, and shipping an
+  unverified claim about tool access is the thing this release is fixing. The
+  engine, its credential paths, its environment allowlist and its output parser
+  are gone rather than left dormant.
+
 ## [1.9.1] - 2026-09-09
 
 Security fix for the marketplace review of 1.9.0.
