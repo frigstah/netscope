@@ -1079,7 +1079,7 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         self.ai_btn.set_sensitive(bool(self._ai_backend))
         if not self._ai_backend:
             self.ai_btn.set_tooltip_text(
-                "No AI engine found (install claude, gemini or codex, or run ollama serve)"
+                "No AI engine found (install claude or codex, or run ollama serve)"
             )
         if not self._probing:
             self.port_store.remove_all()
@@ -1374,7 +1374,7 @@ class NetScopeWindow(Gtk.ApplicationWindow):
         if not self._target_ip:
             return
         if not self._ai_backend:
-            self.log("no AI engine available (install claude/gemini/codex, or run ollama serve)")
+            self.log("no AI engine available (install claude or codex, or run ollama serve)")
             return
         ip = self._target_ip
         host = self._core_host(ip)
@@ -1387,7 +1387,7 @@ class NetScopeWindow(Gtk.ApplicationWindow):
 
     def start_ai_network(self) -> None:
         if not self._ai_backend:
-            self.log("no AI engine available (install claude/gemini/codex, or run ollama)")
+            self.log("no AI engine available (install claude or codex, or run ollama)")
             return
         devices = [asdict(d) for d in store.load().values()]
         if not devices:

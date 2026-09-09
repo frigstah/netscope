@@ -2,7 +2,7 @@
 the report back. Developed for and by frig.
 
 Two kinds of engine:
-  - a cloud CLI already installed and logged in (claude, then gemini, codex).
+  - a cloud CLI already installed and logged in (claude or codex).
     A cloud CLI is an agent runner, not a plain text API, and the prompt it is
     given quotes text written by devices on the LAN. So it is launched with its
     tools switched off AND inside a bubblewrap sandbox: an empty throwaway HOME,
@@ -50,43 +50,33 @@ def _claude_cmd() -> list[str]:
             "--tools", ""]
 
 
-def _gemini_cmd() -> list[str]:
-    # gemini has no "no tools" flag, so the tools are removed through the
-    # settings file written into the sandbox HOME (see _write_engine_config).
-    return ["gemini", "-o", "stream-json", "--approval-mode", "plan"]
+# Every codex feature that can hand the model a tool. `codex features list`
+# names them; --disable X is shorthand for -c features.X=false. Without these
+# codex keeps a working shell tool: it will read files and reach the network,
+# which is exactly the capability an injected banner would go looking for.
+_CODEX_TOOL_FEATURES = ("shell_tool", "unified_exec", "code_mode_host", "apps",
+                        "plugins", "plugin_sharing", "remote_plugin",
+                        "browser_use", "browser_use_external",
+                        "browser_use_full_cdp_access", "computer_use",
+                        "view_image", "in_app_browser")
 
 
 def _codex_cmd() -> list[str]:
     # --ignore-user-config keeps the user's config.toml (and its MCP servers)
-    # out; web search off; the shell tool cannot leave the sandbox.
-    return ["codex", "exec", "--skip-git-repo-check", "-s", "read-only",
-            "--ignore-user-config", "-c", "tools.web_search=false", "-"]
+    # out, web search off, and every tool-granting feature switched off, which
+    # is what makes codex a text generator rather than an agent.
+    cmd = ["codex", "exec", "--skip-git-repo-check", "-s", "read-only",
+           "--ignore-user-config", "-c", "tools.web_search=false"]
+    for feature in _CODEX_TOOL_FEATURES:
+        cmd += ["--disable", feature]
+    return cmd + ["-"]
 
 
-# Tool names to strip from gemini, which cannot be told "no tools" on the
-# command line. Written as a settings file into the throwaway HOME.
-_GEMINI_TOOLS = ["run_shell_command", "read_file", "write_file", "read_many_files",
-                 "search_file_content", "glob", "list_directory", "replace",
-                 "web_fetch", "google_web_search", "save_memory"]
-
-
-def _write_engine_config(backend: str, home: str) -> None:
-    """Config the engine will read from inside the sandbox. Only gemini needs
-    one: its tools are switched off here rather than on the command line."""
-    if backend != "gemini":
-        return
-    cfg = Path(home) / ".gemini"
-    cfg.mkdir(parents=True, exist_ok=True)
-    (cfg / "settings.json").write_text(json.dumps({
-        "tools": {"core": [], "exclude": _GEMINI_TOOLS, "sandbox": False},
-        "mcpServers": {},
-        "extensions": {"disableAll": True},
-    }), encoding="utf-8")
-
-
+# gemini is deliberately absent: it has no way to disable its tools from the
+# command line, and a settings file that claims to could not be verified, so it
+# is not offered rather than shipped unproven.
 CLI_BACKENDS = [
     ("claude", _claude_cmd),
-    ("gemini", _gemini_cmd),
     ("codex", _codex_cmd),
 ]
 _CLI = dict(CLI_BACKENDS)
@@ -110,7 +100,6 @@ SANDBOX_HOME = "/home/netscope-ai"
 # What each CLI needs from the real HOME to authenticate. Nothing else is bound.
 _CLI_SECRETS = {
     "claude": (".claude/.credentials.json",),
-    "gemini": (".gemini/oauth_creds.json", ".gemini/google_accounts.json"),
     "codex": (".codex/auth.json",),
 }
 
@@ -120,8 +109,6 @@ _ENV_BASE = ("LANG", "LC_ALL", "TZ", "SSL_CERT_FILE", "SSL_CERT_DIR",
              "NODE_EXTRA_CA_CERTS", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY")
 _CLI_ENV = {
     "claude": ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"),
-    "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI",
-               "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION"),
     "codex": ("OPENAI_API_KEY", "OPENAI_BASE_URL"),
 }
 
@@ -316,17 +303,6 @@ def _extract_claude_delta(obj: dict) -> str:
     return ""
 
 
-def _extract_gemini_delta(obj: dict) -> str:
-    # an echoed user/system turn is not report text
-    if obj.get("role") in ("user", "system"):
-        return ""
-    if obj.get("type") in ("content", "assistant", "message"):
-        c = obj.get("text") or obj.get("content") or ""
-        if isinstance(c, str):
-            return c
-    return ""
-
-
 def _group_members(pgid) -> list:
     """The pids currently in our process group. Enumerating and signalling each
     one is narrower than killpg: by the time the last sweep runs the leader has
@@ -386,7 +362,6 @@ def _stream_cli(backend: str, prompt: str, on_delta, on_done, stop) -> None:
     # directory, and it is removed when the run ends
     workdir = tempfile.mkdtemp(prefix="netscope-ai-")
     try:
-        _write_engine_config(backend, workdir)
         cmd = (_sandbox_argv(backend, workdir, exe)
                + [os.path.realpath(exe)] + _CLI[backend]()[1:])
         proc = subprocess.Popen(
@@ -466,13 +441,11 @@ def _stream_cli(backend: str, prompt: str, on_delta, on_done, stop) -> None:
                 obj = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if backend == "claude":
-                text = _extract_claude_delta(obj)
-                if not text and obj.get("type") == "result" and obj.get("is_error"):
-                    error = str(obj.get("result") or "AI error")[:200]
-                    break
-            else:
-                text = _extract_gemini_delta(obj)
+            # claude is the only engine on this path: codex streams plain text
+            text = _extract_claude_delta(obj)
+            if not text and obj.get("type") == "result" and obj.get("is_error"):
+                error = str(obj.get("result") or "AI error")[:200]
+                break
             if text:
                 collected.append(text)
                 on_delta(text)
@@ -592,7 +565,7 @@ def _stream(prompt: str, on_delta, on_done, stop, backend: Optional[str]) -> Non
     try:
         engine = backend or available_backend()
         if not engine:
-            done_once("", "no AI engine available (install claude/gemini/codex, or run ollama)")
+            done_once("", "no AI engine available (install claude or codex, or run ollama)")
             return
         if engine == "ollama" or engine.startswith("ollama:"):
             model = engine.split(":", 1)[1] if ":" in engine else ollama_model()

@@ -39,7 +39,7 @@ and plain sockets. No root, no `nmap`.
   services, HTTP titles, TTL) and streams an AI report that identifies the
   manufacturer and model, says what the device is, and explains what each open
   port is being used for. Pick the engine per investigation: a cloud CLI
-  (`claude`, `gemini`, `codex`) or a **local Ollama** model, so a private
+  (`claude` or `codex`) or a **local Ollama** model, so a private
   investigation never leaves your machine.
 - **Whole-network AI summary** - click the `⚠ N` badge by the HOSTS title (or
   `ctrl+shift+I`) for one report that inventories the LAN, ranks the risks, and
@@ -92,7 +92,7 @@ and plain sockets. No root, no `nmap`.
   UI and to find a terminal, `openssh` for the SSH action, `libnotify`
   (`notify-send`) as the fallback when `omarchy-notification-send` is absent -
   each only matters for the action that uses it (optional)
-- for AI SCAN: a cloud AI CLI (`claude`, `gemini` or `codex`) **or** a local
+- for AI SCAN: a cloud AI CLI (`claude` or `codex`) **or** a local
   [Ollama](https://ollama.com) (`ollama serve` on `localhost:11434`) - optional
 - `bubblewrap` (`bwrap`) if you use a cloud AI CLI: NetScope only ever runs one
   inside it, and without it the cloud engines are not offered. Ollama needs no
@@ -213,9 +213,16 @@ it. A cloud CLI is an agent runner, not a text API, so two things are done to it
 **Its tools are switched off.** `claude` runs with `--tools ""` (no built-in
 tools at all), plus `--restricted` and `--strict-mcp-config` so it also ignores
 your settings files and any configured MCP server. `codex` runs with
-`--ignore-user-config`, a read-only sandbox and web search disabled. `gemini`
-has no "no tools" switch, so NetScope writes a settings file into the sandbox
-that empties its tool list and disables extensions and MCP servers.
+`--ignore-user-config`, web search off, and every tool-granting feature
+disabled - `shell_tool`, `unified_exec`, `code_mode_host`, `apps`, `plugins`,
+`browser_use`, `computer_use`, `view_image` and the rest - because a
+read-only sandbox alone leaves its shell tool able to read files and reach the
+network. Asked to read a file or print a credential, both engines answer that
+they have no tools to do it.
+
+`gemini` is not offered. It has no way to disable its tools from the command
+line, and a settings file that claims to could not be verified here, so it is
+left out rather than shipped unproven.
 
 **It is run inside a bubblewrap sandbox.** Empty throwaway HOME, wiped
 environment, read-only view of `/usr` and a handful of `/etc` files, and no
@@ -254,7 +261,7 @@ io.github.frigstah.netscope/
     ├── assess.py      security-posture rules + risk score
     ├── discover.py    active discovery (SSDP/UPnP, NetBIOS, SNMP)
     ├── recon.py       device fingerprint
-    ├── ai.py          AI investigation (claude / gemini / codex / ollama)
+    ├── ai.py          AI investigation (claude / codex / ollama)
     ├── actions.py     per-device actions (web/ssh/wol/ping)
     ├── report.py      json/csv/markdown/html reports
     ├── tui.py         curses terminal UI
