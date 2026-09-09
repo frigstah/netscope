@@ -896,10 +896,10 @@ def _stream_ollama(prompt: str, on_delta, on_done, stop, model: str) -> None:
                     raw = r.readline(MAX_LINE_BYTES)   # bounds an endless line
                     if not raw:
                         break
-                    total += len(raw)
-                    if total > MAX_OUTPUT_BYTES:
+                    if total + len(raw) > MAX_OUTPUT_BYTES:
                         limit["reason"] = "size"
                         break
+                    total += len(raw)
                     try:
                         lines.put(raw, timeout=1.0)
                     except queue.Full:
@@ -914,6 +914,7 @@ def _stream_ollama(prompt: str, on_delta, on_done, stop, model: str) -> None:
     t.start()
     deadline = time.monotonic() + OLLAMA_DEADLINE
     error = ""
+    out_bytes = 0
     who = f"ollama ({model})"
     while True:
         if stop and stop.is_set():
@@ -930,6 +931,8 @@ def _stream_ollama(prompt: str, on_delta, on_done, stop, model: str) -> None:
         except queue.Empty:
             continue
         if item is None:
+            if limit["reason"]:
+                error = _limit_note(limit["reason"], who, OLLAMA_DEADLINE)
             break
         if isinstance(item, BaseException):
             error = f"ollama: {item}"
@@ -946,6 +949,12 @@ def _stream_ollama(prompt: str, on_delta, on_done, stop, model: str) -> None:
             break
         chunk = obj.get("response", "")
         if chunk:
+            room = MAX_OUTPUT_BYTES - out_bytes
+            if room <= 0:
+                error = _limit_note("size", who, OLLAMA_DEADLINE)
+                break
+            chunk = chunk[:room]
+            out_bytes += len(chunk)
             collected.append(chunk)
             on_delta(chunk)
         if obj.get("done"):
