@@ -292,6 +292,36 @@ def sandbox_available() -> bool:
     return _sandbox_ok
 
 
+def real_program(name: str) -> str:
+    """The program itself, never a version manager's shim.
+
+    mise and asdf put a symlink to *themselves* on PATH, so following it lands
+    on the manager, which is then handed the engine's arguments and exits with
+    "unexpected argument". Whether PATH holds the shim or the install directory
+    depends on how the session was started, so resolve it rather than assume:
+    ask the manager where the real program is when the link does not lead to it.
+    """
+    exe = shutil.which(name)
+    if not exe:
+        return ""
+    real = os.path.realpath(exe)
+    if os.path.basename(real) == name:
+        return real
+    for manager in ("mise", "asdf"):
+        tool = shutil.which(manager)
+        if not tool:
+            continue
+        try:
+            done = subprocess.run([tool, "which", name], capture_output=True,
+                                  text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        found = done.stdout.strip()
+        if done.returncode == 0 and found and os.path.basename(found) == name:
+            return os.path.realpath(found)
+    return real
+
+
 def _toolchain_binds(exe: str) -> list[str]:
     """Read-only binds for an engine installed under the user's home (mise, nvm,
     npm, cargo…). Program files only; credentials live elsewhere and are bound
@@ -328,7 +358,7 @@ def _sandbox_argv(backend: str, home: str, exe: str) -> list[str]:
         argv += ["--ro-bind-try", path, path]
     # the engine's own program files, and the runtime it was installed with:
     # a node-based CLI started through a version manager needs that node
-    runtimes = [exe] + [w for w in (shutil.which("node"),) if w]
+    runtimes = [exe] + [w for w in (real_program("node"),) if w]
     seen_binds: set = set()
     path_dirs = ["/usr/bin", "/bin"]
     for tool in runtimes:
@@ -494,7 +524,7 @@ def _kill_group(pgid, proc, sig) -> None:
 
 
 def _stream_cli(backend: str, prompt: str, on_delta, on_done, stop) -> None:
-    exe = shutil.which(backend)
+    exe = real_program(backend)
     if not exe:
         on_done("", f"{backend} is not installed")
         return
@@ -516,7 +546,7 @@ def _stream_cli(backend: str, prompt: str, on_delta, on_done, stop) -> None:
         # sh stays the process group leader so STOP still kills both
         quoted = " ".join(
             "'" + a.replace("'", "'\\''") + "'"
-            for a in [os.path.realpath(exe)] + _CLI[backend]()[1:])
+            for a in [exe] + _CLI[backend]()[1:])
         inner = (f"/usr/bin/python3 {SANDBOX_HOME}/relay.py "
                  f"{SANDBOX_HOME}/egress.sock {SANDBOX_HOME}/relay.ready &\n"
                  f"i=0; while [ ! -e {SANDBOX_HOME}/relay.ready ] && [ $i -lt 100 ]; do\n"

@@ -2,6 +2,18 @@
 
 Notable changes, newest first.
 
+## [1.9.4] - 2026-09-09
+
+### Fixed
+- An AI investigation failed with `claude exited 2: unexpected argument '-p'`
+  and mise's usage text when NetScope was started from the desktop rather than a
+  shell. mise and asdf put a symlink to *themselves* on PATH, so resolving the
+  engine landed on the version manager, which was then handed the engine's
+  arguments. Which of the two a session sees - the shim or the install directory
+  - depends on how it was started, which is why it only broke outside a
+  terminal. The engine and its runtime are now resolved through the manager
+  (`mise which claude`) when the link does not lead to the program itself.
+
 ## [1.9.3] - 2026-09-09
 
 Closes the last of the marketplace security review: outbound access.
