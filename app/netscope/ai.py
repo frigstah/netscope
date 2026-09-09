@@ -121,6 +121,24 @@ _CLI = dict(CLI_BACKENDS)
 # the mount namespace. The one secret inside is the credential for the very
 # service being called, which is the minimum needed to authenticate at all.
 
+# Output ceilings. A finished report is a few kilobytes; these sit far above
+# anything legitimate and exist so that a malformed or hostile stream cannot
+# grow the hand-off queue, the collected text and the UI work behind it without
+# bound. They are enforced at the producer - the reader stops pulling and the
+# process group is killed - rather than by trimming afterwards.
+MAX_OUTPUT_BYTES = 512 * 1024      # total for one run
+MAX_LINE_BYTES = 64 * 1024         # one line, so a stream with no newline is bounded too
+MAX_QUEUED_LINES = 512             # the queue between reader and consumer
+CLI_DEADLINE = 300.0               # wall clock for one cloud investigation
+
+
+def _limit_note(reason: str, who: str, seconds: float = CLI_DEADLINE) -> str:
+    if reason == "size":
+        return (f"{who} produced more than {MAX_OUTPUT_BYTES // 1024} KiB; "
+                "stopped and truncated")
+    return f"{who} passed the {int(seconds)}s limit; stopped and truncated"
+
+
 SANDBOX_BIN = "bwrap"
 SANDBOX_HOME = "/home/netscope-ai"
 
@@ -695,9 +713,13 @@ def _stream_cli(backend: str, prompt: str, on_delta, on_done, stop,
 
     collected: list[str] = []
     plain = backend == "codex"
-    lines = queue.Queue()
+    lines: "queue.Queue" = queue.Queue(maxsize=MAX_QUEUED_LINES)
     errors = deque(maxlen=8)
     error = ""
+    limit_secs = CLI_DEADLINE
+    deadline = time.monotonic() + limit_secs
+    limit = {"reason": ""}            # set by the reader, read by the consumer
+    out_bytes = 0                     # what has been handed on, ceiling included
 
     def pump():
         try:
@@ -707,11 +729,36 @@ def _stream_cli(backend: str, prompt: str, on_delta, on_done, stop,
             pass
 
     def read_stdout():
+        """The ceiling lives here: stop pulling from the pipe the moment the run
+        is too long or too large, and kill the group so it stops producing."""
+        total = 0
         try:
-            for line in proc.stdout:
-                lines.put(line)
+            while not limit["reason"]:
+                if time.monotonic() > deadline:
+                    limit["reason"] = "time"
+                    break
+                # readline(size) also bounds a "line" that never ends
+                line = proc.stdout.readline(MAX_LINE_BYTES)
+                if not line:
+                    break
+                if total + len(line) > MAX_OUTPUT_BYTES:
+                    limit["reason"] = "size"
+                    break
+                total += len(line)
+                try:
+                    lines.put(line, timeout=1.0)
+                except queue.Full:     # consumer gone or wedged: do not buffer
+                    limit["reason"] = "size"
+                    break
+        except (OSError, ValueError):
+            pass
         finally:
-            lines.put(None)
+            if limit["reason"] and proc.poll() is None:
+                _kill_group(pgid, proc, signal.SIGTERM)
+            try:
+                lines.put(None, timeout=1.0)
+            except queue.Full:
+                pass
 
     def read_stderr():
         while True:
@@ -725,18 +772,43 @@ def _stream_cli(backend: str, prompt: str, on_delta, on_done, stop,
     for worker in workers:
         worker.start()
 
+    def emit(piece: str) -> bool:
+        """Hand on at most what the ceiling allows; False once it is reached."""
+        nonlocal out_bytes
+        room = MAX_OUTPUT_BYTES - out_bytes
+        if room <= 0:
+            return False
+        piece = piece[:room]
+        out_bytes += len(piece)
+        collected.append(piece)
+        on_delta(piece)
+        return out_bytes < MAX_OUTPUT_BYTES
+
     try:
         while True:
             if stop and stop.is_set():
                 error = "stopped"
+                break
+            if limit["reason"]:
+                error = _limit_note(limit["reason"], backend, limit_secs)
+                break
+            if time.monotonic() > deadline:
+                limit["reason"] = "time"
+                error = _limit_note("time", backend, limit_secs)
                 break
             try:
                 line = lines.get(timeout=0.1)
             except queue.Empty:
                 continue
             if line is None:
+                if limit["reason"]:
+                    error = _limit_note(limit["reason"], backend, limit_secs)
+                    break
                 # stdout may close before the process exits; keep STOP responsive.
                 while proc.poll() is None:
+                    if time.monotonic() > deadline:
+                        error = error or _limit_note("time", backend, limit_secs)
+                        break
                     if stop and stop.wait(0.1):
                         error = "stopped"
                         break
@@ -750,8 +822,9 @@ def _stream_cli(backend: str, prompt: str, on_delta, on_done, stop,
             if not line:
                 continue
             if plain:
-                collected.append(line + "\n")
-                on_delta(line + "\n")
+                if not emit(line + "\n"):
+                    error = _limit_note("size", backend, limit_secs)
+                    break
                 continue
             try:
                 obj = json.loads(line)
@@ -762,9 +835,9 @@ def _stream_cli(backend: str, prompt: str, on_delta, on_done, stop,
             if not text and obj.get("type") == "result" and obj.get("is_error"):
                 error = str(obj.get("result") or "AI error")[:200]
                 break
-            if text:
-                collected.append(text)
-                on_delta(text)
+            if text and not emit(text):
+                error = _limit_note("size", backend, limit_secs)
+                break
     except Exception as e:
         error = str(e)[:200]
     finally:
@@ -810,15 +883,28 @@ def _stream_ollama(prompt: str, on_delta, on_done, stop, model: str) -> None:
     req = urllib.request.Request(ollama_host() + "/api/generate", data=body,
                                  headers={"Content-Type": "application/json"})
     collected: list[str] = []
-    lines: "queue.Queue" = queue.Queue()
+    lines: "queue.Queue" = queue.Queue(maxsize=MAX_QUEUED_LINES)
     holder = {"resp": None}
+    limit = {"reason": ""}
 
     def reader():
+        total = 0
         try:
             with urllib.request.urlopen(req, timeout=60) as r:
                 holder["resp"] = r
-                for raw in r:
-                    lines.put(raw)
+                while not limit["reason"]:
+                    raw = r.readline(MAX_LINE_BYTES)   # bounds an endless line
+                    if not raw:
+                        break
+                    total += len(raw)
+                    if total > MAX_OUTPUT_BYTES:
+                        limit["reason"] = "size"
+                        break
+                    try:
+                        lines.put(raw, timeout=1.0)
+                    except queue.Full:
+                        limit["reason"] = "size"
+                        break
         except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError) as e:
             lines.put(e)
         finally:
@@ -828,12 +914,16 @@ def _stream_ollama(prompt: str, on_delta, on_done, stop, model: str) -> None:
     t.start()
     deadline = time.monotonic() + OLLAMA_DEADLINE
     error = ""
+    who = f"ollama ({model})"
     while True:
         if stop and stop.is_set():
             error = "stopped"
             break
         if time.monotonic() > deadline:
-            error = "ollama: timed out"
+            error = _limit_note("time", who, OLLAMA_DEADLINE)
+            break
+        if limit["reason"]:
+            error = _limit_note(limit["reason"], who, OLLAMA_DEADLINE)
             break
         try:
             item = lines.get(timeout=0.1)
