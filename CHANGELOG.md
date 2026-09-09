@@ -2,6 +2,17 @@
 
 Notable changes, newest first.
 
+## [1.9.7] - 2026-09-09
+
+### Fixed
+- The Ollama reader could hit its output ceiling and still finish as though the
+  report were complete: the end-of-stream marker is delivered in the same breath
+  as the limit flag, and the consumer acted on the marker first. A truncated
+  report now always comes back with the error that says so, as the cloud path
+  already did. Its ceiling is also checked before a chunk is counted rather than
+  after, and what it hands on is capped, so neither the total nor the delivered
+  text can pass the limit.
+
 ## [1.9.6] - 2026-09-09
 
 ### Security
