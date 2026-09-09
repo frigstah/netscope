@@ -243,6 +243,12 @@ refused, including the other engine's host and the cloud metadata address. In
 practice the engines' telemetry hosts get refused on every run and nothing about
 the investigation suffers.
 
+**Its output is bounded.** A report is a few kilobytes; the reader stops at
+512 KiB in total, 64 KiB on any single line, and 300 seconds of wall clock (600
+for Ollama). Hitting a limit stops the read, kills the engine's whole process
+group and returns what arrived with a note saying it was truncated, so a
+malformed or hostile stream cannot grow the queue or the window without bound.
+
 SNMP queries use the read-only `public` community and never write.
 
 Override the local endpoint/model with `NETSCOPE_OLLAMA_HOST` and

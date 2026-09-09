@@ -2,6 +2,22 @@
 
 Notable changes, newest first.
 
+## [1.9.6] - 2026-09-09
+
+### Security
+- **An engine's output is now bounded in size and in time.** The reader pulled
+  from the engine's stdout until EOF or a manual Stop, into an unbounded queue
+  and an unbounded list, so a malformed or hostile stream could grow the queue,
+  the collected report and the UI work behind it until memory ran out. Both
+  readers - the cloud CLI and Ollama - now stop at a total-output ceiling
+  (512 KiB), at a per-line ceiling (64 KiB, so a stream that never sends a
+  newline is bounded too), and at a wall-clock deadline (300s for a cloud
+  engine, the existing 600s for Ollama). The queue between reader and consumer
+  is bounded at 512 lines and a full queue is treated as the ceiling rather than
+  buffered. Reaching any limit stops the read immediately, terminates and reaps
+  the whole process group, and returns the truncated text with an explanatory
+  error instead of an exception.
+
 ## [1.9.5] - 2026-09-09
 
 ### Fixed
