@@ -234,8 +234,14 @@ run. **Without `bubblewrap` installed, cloud engines are not offered at all** -
 a local Ollama model still works, since it is an HTTP request with no tool loop
 and no subprocess.
 
-Network access stays open inside the sandbox, because reaching the model is the
-point of the call; every tool that could fetch or search on its own is off.
+**It has no network of its own.** The sandbox gets no network namespace at all -
+from inside, DNS fails and a direct HTTPS request fails. The single way out is a
+CONNECT proxy running in the NetScope process, reached over a unix socket, which
+opens connections only to that engine's own API host (`api.anthropic.com` for
+claude, `chatgpt.com` for codex, plus their auth endpoints). Everything else is
+refused, including the other engine's host and the cloud metadata address. In
+practice the engines' telemetry hosts get refused on every run and nothing about
+the investigation suffers.
 
 SNMP queries use the read-only `public` community and never write.
 

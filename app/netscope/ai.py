@@ -19,6 +19,7 @@ import json
 import os
 import queue
 import shutil
+import socket
 import signal
 import subprocess
 import tempfile
@@ -105,8 +106,10 @@ _CLI_SECRETS = {
 
 # The only environment variables that survive, per engine. Everything else -
 # SSH_AUTH_SOCK, tokens, XDG paths, the user's PATH additions - is dropped.
+# HTTPS_PROXY and friends are deliberately absent: the sandbox's proxy setting
+# is the route out, and a value inherited from the user would replace it.
 _ENV_BASE = ("LANG", "LC_ALL", "TZ", "SSL_CERT_FILE", "SSL_CERT_DIR",
-             "NODE_EXTRA_CA_CERTS", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY")
+             "NODE_EXTRA_CA_CERTS")
 _CLI_ENV = {
     "claude": ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"),
     "codex": ("OPENAI_API_KEY", "OPENAI_BASE_URL"),
@@ -125,6 +128,146 @@ _SANDBOX_SYSTEM = ["--ro-bind", "/usr", "/usr",
                    "--symlink", "usr/sbin", "/sbin",
                    "--symlink", "usr/lib", "/lib",
                    "--symlink", "usr/lib64", "/lib64"]
+
+# The only hosts an engine is allowed to reach. Everything else - telemetry,
+# analytics, anything an injected instruction might name - is refused by the
+# proxy, and there is no other route out of the sandbox.
+_CLI_HOSTS = {
+    "claude": ("api.anthropic.com", "console.anthropic.com"),
+    "codex": ("chatgpt.com", "api.openai.com", "auth.openai.com"),
+}
+
+PROXY_PORT = 8899          # inside the sandbox only; it has its own loopback
+
+# Runs inside the sandbox, which has no network of its own: it accepts the
+# engine's proxy connections on loopback and forwards them, byte for byte, down
+# a unix socket to the allowlisting proxy in the NetScope process.
+_RELAY_SRC = '''import socket, sys, threading
+
+sock_path, ready = sys.argv[1], sys.argv[2]
+srv = socket.socket()
+srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+srv.bind(("127.0.0.1", %d))
+srv.listen(64)
+open(ready, "w").close()
+
+
+def pipe(a, b):
+    try:
+        while True:
+            chunk = a.recv(65536)
+            if not chunk:
+                break
+            b.sendall(chunk)
+    except OSError:
+        pass
+    finally:
+        for end in (a, b):
+            try:
+                end.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+
+def handle(conn):
+    up = socket.socket(socket.AF_UNIX)
+    try:
+        up.connect(sock_path)
+    except OSError:
+        conn.close()
+        return
+    threading.Thread(target=pipe, args=(conn, up), daemon=True).start()
+    pipe(up, conn)
+
+
+while True:
+    client, _ = srv.accept()
+    threading.Thread(target=handle, args=(client,), daemon=True).start()
+''' % PROXY_PORT
+
+
+class _EgressProxy:
+    """A CONNECT proxy on a unix socket that only opens the hosts it is given.
+
+    The sandbox has no network at all; this is the single way out, and it is
+    speaking to a process the user owns rather than to the internet.
+    """
+
+    def __init__(self, sock_path: str, hosts: tuple):
+        self.path = sock_path
+        self.hosts = set(hosts)
+        self.denied: list = []
+        self._stop = threading.Event()
+        self._srv = socket.socket(socket.AF_UNIX)
+        self._srv.bind(sock_path)
+        self._srv.listen(64)
+        self._srv.settimeout(0.5)
+        threading.Thread(target=self._serve, daemon=True).start()
+
+    def _serve(self) -> None:
+        while not self._stop.is_set():
+            try:
+                conn, _ = self._srv.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            threading.Thread(target=self._handle, args=(conn,), daemon=True).start()
+
+    def _handle(self, conn) -> None:
+        try:
+            head = b""
+            while b"\r\n\r\n" not in head and len(head) < 8192:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    conn.close()
+                    return
+                head += chunk
+            parts = head.split(b"\r\n")[0].decode("latin1").split()
+            if len(parts) < 2 or parts[0].upper() != "CONNECT":
+                conn.sendall(b"HTTP/1.1 405 Method Not Allowed\r\n\r\n")
+                conn.close()
+                return
+            host, _, port = parts[1].partition(":")
+            if host not in self.hosts:
+                self.denied.append(host)
+                conn.sendall(b"HTTP/1.1 403 Forbidden\r\n\r\n")
+                conn.close()
+                return
+            upstream = socket.create_connection((host, int(port or 443)), timeout=20)
+            conn.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            threading.Thread(target=_splice, args=(conn, upstream), daemon=True).start()
+            _splice(upstream, conn)
+        except (OSError, ValueError, UnicodeDecodeError):
+            try:
+                conn.close()
+            except OSError:
+                pass
+
+    def stop(self) -> None:
+        self._stop.set()
+        try:
+            self._srv.close()
+        except OSError:
+            pass
+
+
+def _splice(a, b) -> None:
+    try:
+        while True:
+            chunk = a.recv(65536)
+            if not chunk:
+                break
+            b.sendall(chunk)
+    except OSError:
+        pass
+    finally:
+        for end in (a, b):
+            try:
+                end.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
 
 _sandbox_ok: Optional[bool] = None
 
@@ -203,10 +346,10 @@ def _sandbox_argv(backend: str, home: str, exe: str) -> list[str]:
     for rel in _CLI_SECRETS.get(backend, ()):
         argv += ["--ro-bind-try", str(real_home / rel), f"{SANDBOX_HOME}/{rel}"]
     argv += ["--chdir", SANDBOX_HOME,
-             # The network stays, because reaching the model is the whole point;
-             # every tool that could fetch on its own is switched off above.
-             # Everything else - IPC, pids, the user's mounts - is unshared.
-             "--unshare-all", "--share-net",
+             # No network namespace of its own means no route out at all: the
+             # engine reaches its API through the relay and the allowlisting
+             # proxy, and nothing else is reachable from in here.
+             "--unshare-all",
              "--new-session",              # no ioctl back into the user's terminal
              "--die-with-parent",
              "--clearenv",
@@ -214,7 +357,9 @@ def _sandbox_argv(backend: str, home: str, exe: str) -> list[str]:
              "--setenv", "USER", "netscope",
              "--setenv", "PATH", ":".join(path_dirs),
              "--setenv", "TERM", "dumb",
-             "--setenv", "NO_COLOR", "1"]
+             "--setenv", "NO_COLOR", "1",
+             "--setenv", "HTTPS_PROXY", f"http://127.0.0.1:{PROXY_PORT}",
+             "--setenv", "HTTP_PROXY", f"http://127.0.0.1:{PROXY_PORT}"]
     if backend == "codex":
         argv += ["--setenv", "CODEX_HOME", f"{SANDBOX_HOME}/.codex"]
     for var in _ENV_BASE + _CLI_ENV.get(backend, ()):
@@ -361,9 +506,24 @@ def _stream_cli(backend: str, prompt: str, on_delta, on_done, stop) -> None:
     # the sandbox HOME and the engine's working directory are the same throwaway
     # directory, and it is removed when the run ends
     workdir = tempfile.mkdtemp(prefix="netscope-ai-")
+    proxy = None
     try:
-        cmd = (_sandbox_argv(backend, workdir, exe)
-               + [os.path.realpath(exe)] + _CLI[backend]()[1:])
+        sock_path = os.path.join(workdir, "egress.sock")
+        proxy = _EgressProxy(sock_path, _CLI_HOSTS.get(backend, ()))
+        with open(os.path.join(workdir, "relay.py"), "w", encoding="utf-8") as fh:
+            fh.write(_RELAY_SRC)
+        # start the relay, wait for it to be listening, then become the engine:
+        # sh stays the process group leader so STOP still kills both
+        quoted = " ".join(
+            "'" + a.replace("'", "'\\''") + "'"
+            for a in [os.path.realpath(exe)] + _CLI[backend]()[1:])
+        inner = (f"/usr/bin/python3 {SANDBOX_HOME}/relay.py "
+                 f"{SANDBOX_HOME}/egress.sock {SANDBOX_HOME}/relay.ready &\n"
+                 f"i=0; while [ ! -e {SANDBOX_HOME}/relay.ready ] && [ $i -lt 100 ]; do\n"
+                 f"  i=$((i+1)); sleep 0.05\n"
+                 f"done\n"
+                 f"exec {quoted}")
+        cmd = _sandbox_argv(backend, workdir, exe) + ["/usr/bin/sh", "-c", inner]
         proc = subprocess.Popen(
             cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, bufsize=1,
@@ -373,6 +533,8 @@ def _stream_cli(backend: str, prompt: str, on_delta, on_done, stop) -> None:
         )
         pgid = os.getpgid(proc.pid)
     except (OSError, ValueError) as e:
+        if proxy is not None:
+            proxy.stop()
         shutil.rmtree(workdir, ignore_errors=True)
         on_done("", f"could not launch {backend}: {e}")
         return
@@ -474,6 +636,7 @@ def _stream_cli(backend: str, prompt: str, on_delta, on_done, stop) -> None:
                 stream.close()
             except OSError:
                 pass
+        proxy.stop()
         # the engines routinely leave state behind in cwd, so rmdir never
         # succeeded and every investigation leaked a temp directory
         shutil.rmtree(workdir, ignore_errors=True)

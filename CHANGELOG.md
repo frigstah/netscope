@@ -2,6 +2,26 @@
 
 Notable changes, newest first.
 
+## [1.9.3] - 2026-09-09
+
+Closes the last of the marketplace security review: outbound access.
+
+### Security
+- **A cloud engine no longer has a network.** 1.9.1 and 1.9.2 kept the sandbox
+  on the host's network because the API call needs it, which left raw outbound
+  access open. The sandbox now gets no network namespace at all - inside it,
+  DNS fails and a direct HTTPS request fails. The engine reaches its API through
+  a small relay on the sandbox's own loopback, forwarded over a unix socket to
+  an allowlisting CONNECT proxy inside the NetScope process, which opens only
+  that engine's own API and auth hosts. Anything else is refused: another
+  engine's host, an arbitrary domain, the cloud metadata address.
+- Both engines were verified to work unchanged under this. Their telemetry
+  endpoints (`http-intake.logs.us5.datadoghq.com`, `ab.chatgpt.com`) are refused
+  on every run with no effect on the investigation.
+- `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY` are no longer passed through from
+  the user's environment: the sandbox's own proxy setting is the route out, and
+  an inherited value would replace it.
+
 ## [1.9.2] - 2026-09-09
 
 Completes the 1.9.1 security fix: tools are now provably off, not merely
