@@ -49,6 +49,16 @@ Notable changes, newest first.
   which host its rows came from and answers for that host.
 - The "double-click a port" hint stayed on screen after the port table was
   cleared.
+- An Ollama line that was valid JSON but not the shape expected - a list, a
+  bare string or number, a `response` that is not text, nesting deeper than the
+  parser allows - ended the investigation with a raw Python error and threw the
+  report received so far away. Such a line is now skipped.
+- An Ollama stream that closes before its final `done` object - cut off in the
+  middle of a line, or empty - finished as though the report were complete. It
+  now keeps what arrived and says the report may be incomplete.
+- When the window stopped taking an engine's output for a second, the run was
+  stopped with "produced more than 512 KiB", however little had arrived. It now
+  says the output went unread. This applies to the cloud engines as well.
 
 ### Changed
 - The port table had both a tooltip and a permanent hint saying the same thing;

@@ -128,12 +128,17 @@ _CLI = dict(CLI_BACKENDS)
 MAX_OUTPUT_BYTES = 512 * 1024      # total for one run
 MAX_LINE_BYTES = 64 * 1024         # one line, so a stream with no newline is bounded too
 MAX_QUEUED_LINES = 512             # the queue between reader and consumer
+QUEUE_STALL = 1.0                  # a full queue left unread this long stops the run
 CLI_DEADLINE = 300.0               # wall clock for one cloud investigation
 
 
 def _limit_note(reason: str, who: str, seconds: float = CLI_DEADLINE) -> str:
     if reason == "size":
         return (f"{who} produced more than {MAX_OUTPUT_BYTES // 1024} KiB; "
+                "stopped and truncated")
+    if reason == "stalled":
+        # the window stopped taking the report, not the engine sending too much
+        return (f"{who}'s output went unread for {QUEUE_STALL:g}s; "
                 "stopped and truncated")
     return f"{who} passed the {int(seconds)}s limit; stopped and truncated"
 
@@ -776,9 +781,9 @@ def _stream_cli(backend: str, prompt: str, on_delta, on_done, stop,
                     break
                 total += len(line)
                 try:
-                    lines.put(line, timeout=1.0)
+                    lines.put(line, timeout=QUEUE_STALL)
                 except queue.Full:     # consumer gone or wedged: do not buffer
-                    limit["reason"] = "size"
+                    limit["reason"] = "stalled"
                     break
         except (OSError, ValueError):
             pass
@@ -929,14 +934,14 @@ def _stream_ollama(prompt: str, on_delta, on_done, stop, model: str) -> None:
 
     def offer(raw: bytes) -> bool:
         """Queue one line: bounded, and given up the moment the run is over."""
-        give_up = time.monotonic() + 1.0
+        give_up = time.monotonic() + QUEUE_STALL
         while not gone.is_set():
             try:
                 lines.put(raw, timeout=0.1)
                 return True
             except queue.Full:
                 if time.monotonic() >= give_up:
-                    limit["reason"] = "size"   # consumer wedged: do not buffer
+                    limit["reason"] = "stalled"   # consumer wedged: do not buffer
                     return False
         return False
 
@@ -1023,19 +1028,26 @@ def _stream_ollama(prompt: str, on_delta, on_done, stop, model: str) -> None:
                     error = _limit_note(limit["reason"], who, OLLAMA_DEADLINE)
                 elif failure:
                     error = f"ollama: {failure[0]}"[:200]
+                else:
+                    # Ollama ends every report with an object marked done; a
+                    # stream that closes first - cut mid-line, say - is short
+                    error = (f"{who} closed the stream before it was done; "
+                             "the report may be incomplete")
                 break
             raw = item.strip()
             if not raw:
                 continue
             try:
                 obj = json.loads(raw)
-            except ValueError:
+            except (ValueError, RecursionError):   # RecursionError: nesting too deep
+                continue
+            if not isinstance(obj, dict):
                 continue
             if obj.get("error"):
                 error = str(obj["error"])[:200]
                 break
-            chunk = obj.get("response", "")
-            if chunk:
+            chunk = obj.get("response")
+            if isinstance(chunk, str) and chunk:
                 room = MAX_OUTPUT_BYTES - out_bytes
                 if room <= 0:
                     error = _limit_note("size", who, OLLAMA_DEADLINE)
