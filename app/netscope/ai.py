@@ -27,8 +27,7 @@ import subprocess
 import tempfile
 import threading
 import time
-import urllib.error
-import urllib.request
+import urllib.parse
 from collections import deque
 from pathlib import Path
 from typing import Callable, Optional
@@ -451,20 +450,51 @@ def ollama_host() -> str:
     return os.environ.get("NETSCOPE_OLLAMA_HOST", "http://localhost:11434").rstrip("/")
 
 
+OLLAMA_TIMEOUT = 60.0      # one socket operation, connect included
+
+
+def _ollama_connection(timeout: float) -> tuple[http.client.HTTPConnection, str]:
+    """An unopened connection to NETSCOPE_OLLAMA_HOST, and its path prefix.
+    http.client rather than urllib so that a run owns its socket: urllib
+    keeps it to itself until the headers arrive, and Ollama sends those with
+    the first token, after the model has loaded. Every Ollama request goes
+    this way, straight to the host: never through a proxy from the
+    environment, which would see the whole prompt, and never redirected."""
+    base = urllib.parse.urlsplit(ollama_host())
+    if base.scheme not in ("http", "https") or not base.hostname:
+        raise ValueError("NETSCOPE_OLLAMA_HOST must be an http:// or https:// URL")
+    https = base.scheme == "https"
+    cls = http.client.HTTPSConnection if https else http.client.HTTPConnection
+    port = base.port or (443 if https else 80)
+    return cls(base.hostname, port, timeout=timeout), base.path.rstrip("/")
+
+
 def ollama_available() -> bool:
     try:
-        with urllib.request.urlopen(ollama_host() + "/api/tags", timeout=1.5) as r:
-            return r.status == 200
-    except (urllib.error.URLError, OSError, ValueError):
+        conn, path = _ollama_connection(1.5)
+        try:
+            conn.request("GET", path + "/api/tags")
+            with conn.getresponse() as r:
+                return r.status == 200
+        finally:
+            conn.close()
+    except (OSError, ValueError, http.client.HTTPException):
         return False
 
 
 def ollama_models() -> list[str]:
     try:
-        with urllib.request.urlopen(ollama_host() + "/api/tags", timeout=2) as r:
-            data = json.loads(r.read())
+        conn, path = _ollama_connection(2)
+        try:
+            conn.request("GET", path + "/api/tags")
+            with conn.getresponse() as r:
+                if r.status != 200:
+                    return []
+                data = json.loads(r.read())
+        finally:
+            conn.close()
         return [m.get("name", "") for m in data.get("models", []) if m.get("name")]
-    except (urllib.error.URLError, OSError, ValueError):
+    except (OSError, ValueError, http.client.HTTPException):
         return []
 
 
@@ -874,97 +904,167 @@ def _stream_cli(backend: str, prompt: str, on_delta, on_done, stop,
 
 
 OLLAMA_DEADLINE = 600.0
+READER_JOIN = 1.0          # how long a finished run waits for its reader to leave
 
 
 def _stream_ollama(prompt: str, on_delta, on_done, stop, model: str) -> None:
     """Read the streaming response on a helper thread so STOP stays responsive:
-    a wedged model must not pin the worker until the socket timeout."""
+    a wedged model must not pin the worker until the socket timeout.
+
+    The reader owns the connection. Once connected it hands this thread a
+    duplicate of the socket, and shutting that down wakes the reader wherever
+    it waits - for the headers while the model loads, for the next line, or
+    for room in the queue. Every way out of the loop below goes through the
+    same teardown: shut the socket down, drain the queue, join the reader with
+    a bounded wait. No write the reader makes to the queue can block for good."""
     body = json.dumps({"model": model, "prompt": prompt, "stream": True}).encode()
-    req = urllib.request.Request(ollama_host() + "/api/generate", data=body,
-                                 headers={"Content-Type": "application/json"})
     collected: list[str] = []
     lines: "queue.Queue" = queue.Queue(maxsize=MAX_QUEUED_LINES)
-    holder = {"resp": None}
     limit = {"reason": ""}
+    failure: list = []                # the reader's exception, if it had one
+    finished = threading.Event()      # the reader has left; nothing more is queued
+    gone = threading.Event()          # the run is over; the reader leaves too
+    guard = threading.Lock()          # orders `gone` against handing over the socket
+    shared: dict = {}                 # the duplicate socket, once connected
+
+    def offer(raw: bytes) -> bool:
+        """Queue one line: bounded, and given up the moment the run is over."""
+        give_up = time.monotonic() + 1.0
+        while not gone.is_set():
+            try:
+                lines.put(raw, timeout=0.1)
+                return True
+            except queue.Full:
+                if time.monotonic() >= give_up:
+                    limit["reason"] = "size"   # consumer wedged: do not buffer
+                    return False
+        return False
 
     def reader():
         total = 0
+        conn = resp = sock = None
         try:
-            with urllib.request.urlopen(req, timeout=60) as r:
-                holder["resp"] = r
-                while not limit["reason"]:
-                    raw = r.readline(MAX_LINE_BYTES)   # bounds an endless line
-                    if not raw:
-                        break
-                    if total + len(raw) > MAX_OUTPUT_BYTES:
-                        limit["reason"] = "size"
-                        break
-                    total += len(raw)
-                    try:
-                        lines.put(raw, timeout=1.0)
-                    except queue.Full:
-                        limit["reason"] = "size"
-                        break
-        except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError) as e:
-            lines.put(e)
+            conn, path = _ollama_connection(OLLAMA_TIMEOUT)
+            conn.connect()
+            sock = conn.sock
+            handle = socket.fromfd(sock.fileno(), sock.family, sock.type)
+            with guard:
+                if not gone.is_set():
+                    shared["sock"], handle = handle, None
+            if handle is not None:     # the run ended while this was connecting
+                handle.close()
+                return
+            conn.request("POST", path + "/api/generate", body=body,
+                         headers={"Content-Type": "application/json"})
+            resp = conn.getresponse()
+            if not 200 <= resp.status < 300:
+                raise http.client.HTTPException(f"HTTP {resp.status} {resp.reason}")
+            while not limit["reason"] and not gone.is_set():
+                raw = resp.readline(MAX_LINE_BYTES)   # bounds an endless line
+                if not raw:
+                    break
+                if total + len(raw) > MAX_OUTPUT_BYTES:
+                    limit["reason"] = "size"
+                    break
+                total += len(raw)
+                if not offer(raw):
+                    break
+        except Exception as e:         # noqa: BLE001 - the run reports it
+            if not gone.is_set():      # after teardown it is only the shutdown
+                failure.append(e)
         finally:
-            lines.put(None)
+            if sock is not None:
+                # the run's duplicate would keep the connection open, and
+                # Ollama generating, for as long as the run is busy elsewhere
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+            for part in (resp, conn, sock):
+                if part is not None:
+                    try:
+                        part.close()
+                    except Exception:
+                        pass
+            finished.set()
+            try:
+                lines.put_nowait(None)   # only a wake-up: the end is `finished`
+            except queue.Full:
+                pass
 
     t = threading.Thread(target=reader, daemon=True)
-    t.start()
     deadline = time.monotonic() + OLLAMA_DEADLINE
     error = ""
     out_bytes = 0
     who = f"ollama ({model})"
-    while True:
-        if stop and stop.is_set():
-            error = "stopped"
-            break
-        if time.monotonic() > deadline:
-            error = _limit_note("time", who, OLLAMA_DEADLINE)
-            break
-        if limit["reason"]:
-            error = _limit_note(limit["reason"], who, OLLAMA_DEADLINE)
-            break
-        try:
-            item = lines.get(timeout=0.1)
-        except queue.Empty:
-            continue
-        if item is None:
+    try:
+        if not (stop and stop.is_set()):   # stopped already: connect to nothing
+            t.start()
+        while True:
+            if stop and stop.is_set():
+                error = "stopped"
+                break
+            if time.monotonic() > deadline:
+                error = _limit_note("time", who, OLLAMA_DEADLINE)
+                break
             if limit["reason"]:
                 error = _limit_note(limit["reason"], who, OLLAMA_DEADLINE)
-            break
-        if isinstance(item, BaseException):
-            error = f"ollama: {item}"
-            break
-        raw = item.strip()
-        if not raw:
-            continue
-        try:
-            obj = json.loads(raw)
-        except ValueError:
-            continue
-        if obj.get("error"):
-            error = str(obj["error"])[:200]
-            break
-        chunk = obj.get("response", "")
-        if chunk:
-            room = MAX_OUTPUT_BYTES - out_bytes
-            if room <= 0:
-                error = _limit_note("size", who, OLLAMA_DEADLINE)
                 break
-            chunk = chunk[:room]
-            out_bytes += len(chunk)
-            collected.append(chunk)
-            on_delta(chunk)
-        if obj.get("done"):
-            break
-    resp = holder.get("resp")
-    if resp is not None:
+            try:
+                item = lines.get(timeout=0.1)
+            except queue.Empty:
+                item = None
+            if item is None:
+                # the reader is done once it says so and nothing it queued is
+                # left; its end-of-stream marker may not have found room
+                if not (finished.is_set() and lines.empty()):
+                    continue
+                if limit["reason"]:
+                    error = _limit_note(limit["reason"], who, OLLAMA_DEADLINE)
+                elif failure:
+                    error = f"ollama: {failure[0]}"[:200]
+                break
+            raw = item.strip()
+            if not raw:
+                continue
+            try:
+                obj = json.loads(raw)
+            except ValueError:
+                continue
+            if obj.get("error"):
+                error = str(obj["error"])[:200]
+                break
+            chunk = obj.get("response", "")
+            if chunk:
+                room = MAX_OUTPUT_BYTES - out_bytes
+                if room <= 0:
+                    error = _limit_note("size", who, OLLAMA_DEADLINE)
+                    break
+                chunk = chunk[:room]
+                out_bytes += len(chunk)
+                collected.append(chunk)
+                on_delta(chunk)
+            if obj.get("done"):
+                break
+    finally:
+        # done, an error, a ceiling, the deadline, STOP, or an exception from
+        # on_delta: the reader is ended the same way every time
+        with guard:
+            gone.set()
+            handle = shared.pop("sock", None)
+        if handle is not None:
+            try:
+                handle.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            handle.close()
         try:
-            resp.close()   # unblocks the reader thread
-        except Exception:
+            while True:
+                lines.get_nowait()     # a reader waiting for room leaves at once
+        except queue.Empty:
             pass
+        if t.ident is not None:
+            t.join(READER_JOIN)
     on_done("".join(collected), error)
 
 

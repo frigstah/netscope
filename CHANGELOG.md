@@ -54,6 +54,35 @@ Notable changes, newest first.
 - The port table had both a tooltip and a permanent hint saying the same thing;
   only the hint remains.
 
+## [1.9.8] - 2026-09-24
+
+### Fixed
+- **An Ollama run no longer leaves its reader thread behind.** When the queue
+  between the reader and the run was full, the reader left its loop and then
+  waited, with no timeout, for room for its end-of-stream marker - after the
+  run had stopped reading. A STOP before Ollama's first token did the same:
+  the response did not exist yet, so there was nothing to close, and the reader
+  went on to fill the queue. Each such run kept a thread and its connection for
+  the life of the process. No queue write the reader makes can block for good
+  now: a line waits for room only briefly and not at all once the run is over,
+  and the end marker is only a wake-up that is dropped when there is no room.
+  Every way a run ends - the report done, an error, a ceiling, the deadline,
+  STOP, or an exception while handing a line on - goes through one teardown
+  that shuts the connection down, empties the queue and joins the reader with
+  a bounded wait.
+- STOP and the deadline no longer wait for a stalled model. Closing the
+  response from the run's side waited on a lock the reader holds while it
+  waits for data, so a STOP on a model that had gone quiet took until the next
+  token, or the 60-second socket timeout. The reader now makes the connection
+  itself (http.client rather than urllib) and hands the run a duplicate of the
+  socket; shutting that down wakes the reader wherever it waits, and the closed
+  connection is what makes Ollama stop generating.
+- Every Ollama request - the report and the model list - now goes straight to
+  `NETSCOPE_OLLAMA_HOST`, which must be an `http://` or `https://` URL. None
+  passes through an `http_proxy` from the environment any more, which saw the
+  whole prompt and, with no `no_proxy` for localhost, broke the local engine;
+  none follows a redirect.
+
 ## [1.9.7] - 2026-09-09
 
 ### Fixed

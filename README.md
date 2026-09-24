@@ -261,6 +261,10 @@ the investigation suffers.
 for Ollama). Hitting a limit stops the read, kills the engine's whole process
 group and returns what arrived with a note saying it was truncated, so a
 malformed or hostile stream cannot grow the queue or the window without bound.
+However an Ollama run ends - finished, failed, limited or stopped - its
+connection is shut down and its reader joined with a bounded wait. The one step
+STOP cannot cut short is connecting: the run still ends after a second, and the
+reader follows once the connect gives up (60 seconds for each address tried).
 
 SNMP queries use the read-only `public` community and never write.
 
