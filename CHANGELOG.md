@@ -2,6 +2,23 @@
 
 Notable changes, newest first.
 
+## [1.9.9] - 2026-09-27
+
+### Fixed
+- **`install.sh` no longer replaces files it did not put there.** It linked the
+  `netscope` command with `ln -sf` and installed the launcher, the icon and
+  (with `--watch`) the watcher unit with `install`, so a file of your own at
+  any of those shared paths - another program called `netscope`, a launcher or
+  unit of that name - was overwritten without a word. A target is now written
+  only when nothing is there yet, when it already holds exactly what NetScope
+  installs, or when NetScope placed it earlier and it has not changed since;
+  the installer keeps that list in `~/.local/state/netscope/installed`, so its
+  own files still update on an upgrade. Anything else - someone else's file, a
+  link pointing elsewhere, a directory, or NetScope's own file that you edited
+  - is left alone and named at the end of the run, and a watcher unit that is
+  not NetScope's is never enabled. The uninstall steps in the README remove
+  only what that list names.
+
 ## [1.9.8] - 2026-09-24
 
 ### Fixed

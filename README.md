@@ -111,6 +111,13 @@ and icon, and checks dependencies. It writes nothing outside `~/.local` and
 `~/.config`, and needs no root. `install.sh --enable` also places the bar
 widget; `install.sh --watch` installs the background watcher described below.
 
+It never replaces a file it did not put there. A target is written only when
+nothing is there yet, when it already holds what NetScope installs, or when
+NetScope placed it earlier and it has not changed since; it keeps that list in
+`~/.local/state/netscope/installed`. Anything else is left alone and named at
+the end of the run - remove it yourself and run `install.sh` again if you want
+NetScope's own there.
+
 ## Bar widget
 
 - **left** - popout (interfaces, public IP, last sweep)
@@ -290,13 +297,15 @@ systemd/netscope-watch.service   optional background watcher unit
 ## Uninstall
 
 ```bash
-systemctl --user disable --now netscope-watch.service 2>/dev/null || true
-rm -f ~/.config/systemd/user/netscope-watch.service
+# only what install.sh placed - it listed each path in this file
+list="${XDG_STATE_HOME:-$HOME/.local/state}/netscope/installed"
+if grep -q "/netscope-watch.service$" "$list" 2>/dev/null; then
+  systemctl --user disable --now netscope-watch.service 2>/dev/null || true
+fi
+[ -f "$list" ] && cut -f2 "$list" | while IFS= read -r f; do rm -f -- "$f"; done
 systemctl --user daemon-reload 2>/dev/null || true
 omarchy plugin remove io.github.frigstah.netscope --yes
-rm -f ~/.local/bin/netscope ~/.local/share/applications/netscope.desktop
-rm -f ~/.local/share/icons/hicolor/256x256/apps/netscope.png
-rm -rf ~/.local/state/netscope   # inventory + event history
+rm -rf ~/.local/state/netscope   # inventory, event history, the install list
 rm -rf ~/.cache/netscope         # cached public IP, location and last sweep
 command -v update-desktop-database >/dev/null && update-desktop-database ~/.local/share/applications || true
 command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q ~/.local/share/icons/hicolor || true
