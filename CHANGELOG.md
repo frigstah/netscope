@@ -2,6 +2,20 @@
 
 Notable changes, newest first.
 
+## [1.9.10] - 2026-09-27
+
+### Fixed
+- **Uninstalling no longer removes a file you changed after installing.** The
+  README's uninstall steps deleted every path in
+  `~/.local/state/netscope/installed`, whatever was there by then, so a
+  launcher, icon, watcher unit or link you had edited or replaced since was
+  removed even though the installer itself would have left it alone. Removal is
+  now `install.sh --uninstall`, which applies the installer's own check the
+  other way round: it removes a path only while it still holds exactly what the
+  list recorded - the same checksum, or a link to the same place - disables the
+  watcher only while its unit is NetScope's unmodified one, and keeps and names
+  everything else.
+
 ## [1.9.9] - 2026-09-27
 
 ### Fixed

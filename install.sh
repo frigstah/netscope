@@ -4,6 +4,7 @@
 #   ./install.sh              link the CLI, install the launcher, check deps
 #   ./install.sh --enable     also add the bar widget to the right section
 #   ./install.sh --watch      also enable the background watcher (systemd --user)
+#   ./install.sh --uninstall  remove what it installed, where nothing has changed it
 #
 # Installing the plugin itself is `omarchy plugin add <git-url>`; this script
 # links the `netscope` command and the desktop launcher, which the window and
@@ -11,33 +12,6 @@
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 CLI="$HERE/bin/netscope"
-
-# --- dependencies ---------------------------------------------------------- #
-missing=()
-for dep in python3 ip ping curl; do
-  command -v "$dep" >/dev/null || missing+=("$dep")
-done
-if ((${#missing[@]})); then
-  echo "install.sh: missing dependencies: ${missing[*]}" >&2
-  exit 1
-fi
-# Only the window needs the toolkit, so this is a note and not a failure: the
-# command line, `netscope --tui` and the watcher install and run without it.
-if ! python3 -c 'import gi; gi.require_version("Gtk","4.0"); gi.require_version("Adw","1"); from gi.repository import Gtk, Adw; raise SystemExit(0 if (Gtk.get_major_version(), Gtk.get_minor_version()) >= (4, 12) else 1)' 2>/dev/null; then
-  echo "note: python-gobject, gtk4 4.12+ and libadwaita not available - the NetScope window needs them"
-  echo "  install with: omarchy pkg add python-gobject gtk4 libadwaita"
-  echo "  the command line, 'netscope --tui' and the watcher work without them"
-fi
-python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' \
-  || echo "note: python3 is older than 3.11 - the window needs 3.11+; the command line and 'netscope --tui' do not"
-command -v avahi-resolve >/dev/null || echo "note: avahi not found - mDNS names will be skipped (optional)"
-command -v claude >/dev/null || command -v codex >/dev/null \
-  || curl -sf -m 2 -o /dev/null "${NETSCOPE_OLLAMA_HOST:-http://localhost:11434}/api/tags" \
-  || echo "note: no AI engine found - AI SCAN needs claude or codex, or a local 'ollama serve' (optional)"
-if command -v claude >/dev/null || command -v codex >/dev/null; then
-  command -v bwrap >/dev/null \
-    || echo "note: bubblewrap not found - a cloud AI CLI is only ever run inside it, so cloud engines will not be offered (pacman -S bubblewrap). A local Ollama model needs no sandbox."
-fi
 
 # --- files at shared paths ------------------------------------------------- #
 # ~/.local/bin, the launcher and icon directories and the systemd user
@@ -47,17 +21,19 @@ fi
 # changed it since - the list of what it placed is kept in $RECORD. Anything
 # else is left alone and reported: replacing a file of your own is yours to
 # do, by removing it and running this again.
+# --uninstall removes a path only while it still holds what the list says.
 RECORD="${XDG_STATE_HOME:-$HOME/.local/state}/netscope/installed"
-mkdir -p "$(dirname "$RECORD")"
-touch "$RECORD"
 skipped=()
 
 recorded() {    # what the record says NetScope left at a path, if anything
+  [ -f "$RECORD" ] || return 0
   awk -F'\t' -v p="$1" '$2 == p { v = $1 } END { if (v != "") print v }' "$RECORD"
 }
 
 remember() {    # path, what is there now
   local tmp
+  mkdir -p "$(dirname "$RECORD")"
+  touch "$RECORD"
   tmp=$(mktemp "$RECORD.XXXXXX")
   awk -F'\t' -v p="$1" '$2 != p' "$RECORD" >"$tmp"
   printf '%s\t%s\n' "$2" "$1" >>"$tmp"
@@ -105,6 +81,79 @@ place_link() {  # what it points to, the link
   ln -s "$1" "$2" 2>/dev/null || { skipped+=("$2"); return 1; }
   remember "$2" "link:$1"
 }
+
+unchanged() {   # the path still holds exactly what NetScope left there
+  local rec
+  rec=$(recorded "$1")
+  [ -n "$rec" ] || return 1
+  case $rec in
+    link:*) [ -L "$1" ] && [ "link:$(readlink "$1")" = "$rec" ] ;;
+    *) [ -f "$1" ] && [ ! -L "$1" ] && [ "$(sha256sum <"$1" | cut -d' ' -f1)" = "$rec" ] ;;
+  esac
+}
+
+uninstall() {
+  local paths=() kept=() path unit="$HOME/.config/systemd/user/netscope-watch.service"
+  if [ ! -f "$RECORD" ]; then
+    echo "nothing to remove: install.sh has no record of placing anything ($RECORD)"
+    return 0
+  fi
+  mapfile -t paths < <(cut -f2 "$RECORD")
+  if unchanged "$unit" && command -v systemctl >/dev/null; then
+    systemctl --user disable --now netscope-watch.service 2>/dev/null || true
+  fi
+  for path in "${paths[@]}"; do
+    [ -n "$path" ] || continue
+    if unchanged "$path"; then
+      rm -f -- "$path" && echo "==> removed $path"
+    elif [ -e "$path" ] || [ -L "$path" ]; then
+      kept+=("$path")           # changed since it was installed: no longer ours
+    fi
+  done
+  rm -f "$RECORD"
+  if command -v systemctl >/dev/null; then systemctl --user daemon-reload 2>/dev/null || true; fi
+  command -v update-desktop-database >/dev/null && update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
+  command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
+  if ((${#kept[@]})); then
+    echo
+    echo "note: kept these - they changed after NetScope installed them:"
+    printf '  %s\n' "${kept[@]}"
+  fi
+}
+
+for a in "${@:-}"; do
+  if [ "$a" = "--uninstall" ]; then
+    uninstall
+    exit 0
+  fi
+done
+
+# --- dependencies ---------------------------------------------------------- #
+missing=()
+for dep in python3 ip ping curl; do
+  command -v "$dep" >/dev/null || missing+=("$dep")
+done
+if ((${#missing[@]})); then
+  echo "install.sh: missing dependencies: ${missing[*]}" >&2
+  exit 1
+fi
+# Only the window needs the toolkit, so this is a note and not a failure: the
+# command line, `netscope --tui` and the watcher install and run without it.
+if ! python3 -c 'import gi; gi.require_version("Gtk","4.0"); gi.require_version("Adw","1"); from gi.repository import Gtk, Adw; raise SystemExit(0 if (Gtk.get_major_version(), Gtk.get_minor_version()) >= (4, 12) else 1)' 2>/dev/null; then
+  echo "note: python-gobject, gtk4 4.12+ and libadwaita not available - the NetScope window needs them"
+  echo "  install with: omarchy pkg add python-gobject gtk4 libadwaita"
+  echo "  the command line, 'netscope --tui' and the watcher work without them"
+fi
+python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' \
+  || echo "note: python3 is older than 3.11 - the window needs 3.11+; the command line and 'netscope --tui' do not"
+command -v avahi-resolve >/dev/null || echo "note: avahi not found - mDNS names will be skipped (optional)"
+command -v claude >/dev/null || command -v codex >/dev/null \
+  || curl -sf -m 2 -o /dev/null "${NETSCOPE_OLLAMA_HOST:-http://localhost:11434}/api/tags" \
+  || echo "note: no AI engine found - AI SCAN needs claude or codex, or a local 'ollama serve' (optional)"
+if command -v claude >/dev/null || command -v codex >/dev/null; then
+  command -v bwrap >/dev/null \
+    || echo "note: bubblewrap not found - a cloud AI CLI is only ever run inside it, so cloud engines will not be offered (pacman -S bubblewrap). A local Ollama model needs no sandbox."
+fi
 
 # --- link the CLI ---------------------------------------------------------- #
 place_link "$CLI" "$HOME/.local/bin/netscope" && echo "==> linked ~/.local/bin/netscope"
