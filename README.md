@@ -123,7 +123,9 @@ nothing is there yet, when it already holds what NetScope installs, or when
 NetScope placed it earlier and it has not changed since; it keeps that list in
 `~/.local/state/netscope/installed`. Anything else is left alone and named at
 the end of the run - remove it yourself and run `install.sh` again if you want
-NetScope's own there.
+NetScope's own there. `install.sh --uninstall` works the same way round: it
+removes a path only while it still holds exactly what that list says, and keeps
+and names anything changed since.
 
 ## Bar widget
 
@@ -339,18 +341,10 @@ systemd/netscope-watch.service   optional background watcher unit
 ## Uninstall
 
 ```bash
-# only what install.sh placed - it listed each path in this file
-list="${XDG_STATE_HOME:-$HOME/.local/state}/netscope/installed"
-if grep -q "/netscope-watch.service$" "$list" 2>/dev/null; then
-  systemctl --user disable --now netscope-watch.service 2>/dev/null || true
-fi
-[ -f "$list" ] && cut -f2 "$list" | while IFS= read -r f; do rm -f -- "$f"; done
-systemctl --user daemon-reload 2>/dev/null || true
+~/.config/omarchy/plugins/io.github.frigstah.netscope/install.sh --uninstall
 omarchy plugin remove io.github.frigstah.netscope --yes
-rm -rf ~/.local/state/netscope   # inventory, event history, the install list
+rm -rf ~/.local/state/netscope   # inventory + event history
 rm -rf ~/.cache/netscope         # cached public IP, location and last sweep
-command -v update-desktop-database >/dev/null && update-desktop-database ~/.local/share/applications || true
-command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q ~/.local/share/icons/hicolor || true
 ```
 
 ---
