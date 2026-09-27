@@ -39,22 +39,87 @@ if command -v claude >/dev/null || command -v codex >/dev/null; then
     || echo "note: bubblewrap not found - a cloud AI CLI is only ever run inside it, so cloud engines will not be offered (pacman -S bubblewrap). A local Ollama model needs no sandbox."
 fi
 
+# --- files at shared paths ------------------------------------------------- #
+# ~/.local/bin, the launcher and icon directories and the systemd user
+# directory are shared with everything else you have installed. A target is
+# written only when nothing is there yet, when it already holds exactly what
+# NetScope installs, or when NetScope put it there itself and nothing has
+# changed it since - the list of what it placed is kept in $RECORD. Anything
+# else is left alone and reported: replacing a file of your own is yours to
+# do, by removing it and running this again.
+RECORD="${XDG_STATE_HOME:-$HOME/.local/state}/netscope/installed"
+mkdir -p "$(dirname "$RECORD")"
+touch "$RECORD"
+skipped=()
+
+recorded() {    # what the record says NetScope left at a path, if anything
+  awk -F'\t' -v p="$1" '$2 == p { v = $1 } END { if (v != "") print v }' "$RECORD"
+}
+
+remember() {    # path, what is there now
+  local tmp
+  tmp=$(mktemp "$RECORD.XXXXXX")
+  awk -F'\t' -v p="$1" '$2 != p' "$RECORD" >"$tmp"
+  printf '%s\t%s\n' "$2" "$1" >>"$tmp"
+  mv -f "$tmp" "$RECORD"
+}
+
+place_file() {  # source, target
+  local want have
+  want=$(sha256sum <"$1" | cut -d' ' -f1)
+  if [ -L "$2" ] || { [ -e "$2" ] && [ ! -f "$2" ]; }; then
+    skipped+=("$2")               # a link or a directory NetScope never makes
+    return 1
+  fi
+  if [ -f "$2" ]; then
+    have=$(sha256sum <"$2" | cut -d' ' -f1)
+    if [ "$have" != "$want" ] && [ "$have" != "$(recorded "$2")" ]; then
+      skipped+=("$2")             # someone else's file, or ours edited since
+      return 1
+    fi
+  fi
+  mkdir -p "$(dirname "$2")"
+  install -m644 "$1" "$2" || return 1
+  remember "$2" "$want"
+}
+
+place_link() {  # what it points to, the link
+  local now
+  if [ -L "$2" ]; then
+    now=$(readlink "$2")
+    if [ "$now" = "$1" ]; then
+      remember "$2" "link:$1"
+      return 0
+    fi
+    if [ "link:$now" != "$(recorded "$2")" ]; then
+      skipped+=("$2")
+      return 1
+    fi
+    rm -f "$2"                    # NetScope's own link to where it used to live
+  elif [ -e "$2" ]; then
+    skipped+=("$2")
+    return 1
+  fi
+  mkdir -p "$(dirname "$2")"
+  # plain ln -s refuses to replace anything that appeared in the meantime
+  ln -s "$1" "$2" 2>/dev/null || { skipped+=("$2"); return 1; }
+  remember "$2" "link:$1"
+}
+
 # --- link the CLI ---------------------------------------------------------- #
-mkdir -p "$HOME/.local/bin"
-ln -sf "$CLI" "$HOME/.local/bin/netscope"
-echo "==> linked ~/.local/bin/netscope"
+place_link "$CLI" "$HOME/.local/bin/netscope" && echo "==> linked ~/.local/bin/netscope"
 
 # --- desktop launcher ------------------------------------------------------ #
 APPS="$HOME/.local/share/applications"
-mkdir -p "$APPS"
-install -m644 "$HERE/netscope.desktop" "$APPS/netscope.desktop"
-# icon for the app grid
 ICONS="$HOME/.local/share/icons/hicolor/256x256/apps"
-mkdir -p "$ICONS"
-install -m644 "$HERE/icon.png" "$ICONS/netscope.png"
-command -v update-desktop-database >/dev/null && update-desktop-database "$APPS" 2>/dev/null || true
-command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
-echo "==> installed launcher + icon"
+if place_file "$HERE/netscope.desktop" "$APPS/netscope.desktop"; then
+  echo "==> installed the launcher"
+  command -v update-desktop-database >/dev/null && update-desktop-database "$APPS" 2>/dev/null || true
+fi
+if place_file "$HERE/icon.png" "$ICONS/netscope.png"; then
+  echo "==> installed the icon"
+  command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
+fi
 
 # --- optional: bar widget -------------------------------------------------- #
 enable=0; watch=0
@@ -74,9 +139,9 @@ fi
 # --- optional: background watcher (systemd --user) ------------------------- #
 if [ "$watch" = 1 ]; then
   UNITDIR="$HOME/.config/systemd/user"
-  mkdir -p "$UNITDIR"
-  install -m644 "$HERE/systemd/netscope-watch.service" "$UNITDIR/netscope-watch.service"
-  if command -v systemctl >/dev/null; then
+  if ! place_file "$HERE/systemd/netscope-watch.service" "$UNITDIR/netscope-watch.service"; then
+    echo "note: the watcher was not enabled - a netscope-watch.service that NetScope did not install is already there"
+  elif command -v systemctl >/dev/null; then
     systemctl --user daemon-reload 2>/dev/null || true
     systemctl --user enable --now netscope-watch.service 2>/dev/null \
       && echo "==> watcher enabled (systemctl --user status netscope-watch)" \
@@ -86,6 +151,17 @@ if [ "$watch" = 1 ]; then
   fi
 fi
 
+if ((${#skipped[@]})); then
+  echo
+  echo "note: left these alone - something NetScope did not install is already there:"
+  printf '  %s\n' "${skipped[@]}"
+  echo "  to install NetScope's own there, remove it and run install.sh again"
+fi
+
 echo
-echo "Done. Launch it with:  netscope"
+if [ "$(recorded "$HOME/.local/bin/netscope")" = "link:$CLI" ]; then
+  echo "Done. Launch it with:  netscope"
+else
+  echo "Done. Launch it with:  $CLI"
+fi
 echo "Add the bar widget with:  omarchy plugin enable io.github.frigstah.netscope right"
